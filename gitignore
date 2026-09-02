@@ -1,0 +1,57 @@
+# =========================================================
+# TENNIS EDGE PRO - archivos que NO deben ir a GitHub
+# =========================================================
+
+# Secretos / credenciales
+.env
+.env.*
+.streamlit/secrets.toml
+secrets.toml
+api_config_local.py
+api_config.private.py
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Entornos virtuales
+.venv/
+venv/
+env/
+ENV/
+
+# IDE / sistema
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs y temporales
+*.log
+*.tmp
+*.bak
+*.swp
+update_daily.log
+
+# Runtime local: cuotas pre-match capturadas
+# IMPORTANTE: tennis_edge.db NO se ignora porque contiene
+# el histórico necesario para arrancar la app.
+prematch_odds.db
+prematch_odds.db-shm
+prematch_odds.db-wal
+
+# Backups SQLite / temporales
+*.db-journal
+*.sqlite-journal
+
+# Versiones de desarrollo / diagnósticos opcionales
+prueba*.png
+error*.png
+diagnostico_*.py
+auditar_*.py
+test_*.py
