@@ -1,3 +1,4 @@
+# BUILD: V13.5.3 · MOBILE SAFE + TOP PICKS QUALITY
 import os
 import html
 import textwrap
@@ -2434,7 +2435,7 @@ def formatear_hora_utc(start_time):
 
 def calcular_value_score(
     ev,
-    match_confidence,
+    pick_probability,
     market_quality,
     valid_bookmakers
 ):
@@ -2452,10 +2453,10 @@ def calcular_value_score(
         0.0
     )
 
-    match_confidence = max(
+    pick_probability = max(
         min(
             float(
-                match_confidence
+                pick_probability
                 or 0.0
             ),
             1.0
@@ -2484,10 +2485,10 @@ def calcular_value_score(
         min(
             max(
                 (
-                    match_confidence
-                    - 0.70
+                    pick_probability
+                    - 0.60
                 )
-                / 0.20,
+                / 0.25,
                 0.0
             ),
             1.0
@@ -2664,7 +2665,8 @@ def generar_predicciones_proximos(
 
         pick_auto = {
             "qualifies": False,
-            "label": "-"
+            "label": "-",
+            "reason": "SIN_MERCADO",
         }
 
         if datos_cuotas:
@@ -2694,6 +2696,7 @@ def generar_predicciones_proximos(
                     "qualifies": False,
                     "inserted": False,
                     "label": "🔒 Cuota PRE-MATCH congelada",
+                    "reason": "PARTIDO_INICIADO",
                 }
 
         pick_selection = (
@@ -2751,7 +2754,7 @@ def generar_predicciones_proximos(
         value_score = (
             calcular_value_score(
                 pick_ev,
-                prob_favorito,
+                pick_probability,
                 market_quality,
                 valid_bookmakers
             )
@@ -2897,6 +2900,32 @@ def generar_predicciones_proximos(
                 "_pick_ev": (
                     pick_ev
                 ),
+                "_pick_reason": (
+                    pick_auto.get(
+                        "reason",
+                        "SIN_CLASIFICAR"
+                    )
+                ),
+                "_candidate_selection": (
+                    pick_auto.get(
+                        "candidate_selection"
+                    )
+                ),
+                "_candidate_probability": (
+                    pick_auto.get(
+                        "candidate_probability"
+                    )
+                ),
+                "_candidate_odds": (
+                    pick_auto.get(
+                        "candidate_odds"
+                    )
+                ),
+                "_candidate_ev": (
+                    pick_auto.get(
+                        "candidate_ev"
+                    )
+                ),
                 "_best_ev_raw": (
                     max(
                         ev_a,
@@ -2975,7 +3004,7 @@ def _cargar_predicciones_para_paginas(df, ventana, usar_elo, data_version):
 def render_top_picks_page(df, ventana, usar_elo, data_version):
     st.markdown('<div class="tep-section-title">🏆 Top Picks del Día</div>', unsafe_allow_html=True)
     st.caption(
-        "Sólo aparecen selecciones con confianza ≥70%, EV ≥+5% y mercado validado. "
+        "Top Pick = probabilidad de LA SELECCIÓN ≥60%, cuota 1.50–3.00, EV ≥+5% y mercado validado. "
         "🔒 Las cuotas son exclusivamente PRE-MATCH: al comenzar el partido se congela "
         "el último snapshot válido y nunca se usan cuotas LIVE. "
         "El Value Score ordena oportunidades; no es una probabilidad de ganar."
@@ -3046,23 +3075,174 @@ def render_top_picks_page(df, ventana, usar_elo, data_version):
                 use_container_width=True,
             )
 
-        with st.expander("🧪 Diagnóstico del motor"):
-            diag = raw[[
-                "Fecha","Hora","Jugador 1","Jugador 2","_match_confidence",
-                "_best_ev_raw","_market_available","_market_quality",
-                "_valid_bookmakers","_pick_qualifies"
-            ]].copy()
-            diag["Partido"] = diag["Jugador 1"] + " vs " + diag["Jugador 2"]
-            diag["Confianza"] = diag["_match_confidence"].map(lambda x: f"{float(x):.1%}")
-            diag["Mejor EV"] = diag["_best_ev_raw"].map(lambda x: "-" if pd.isna(x) else f"{float(x):+.1%}")
-            diag["Mercado válido"] = diag["_market_available"].map(lambda x: "✅" if x else "❌")
-            diag["Top Pick"] = diag["_pick_qualifies"].map(lambda x: "🏆" if x else "-")
-            st.dataframe(
-                diag[["Fecha","Hora","Partido","Confianza","Mejor EV","Mercado válido","_market_quality","_valid_bookmakers","Top Pick"]]
-                    .rename(columns={"_market_quality":"Calidad mercado","_valid_bookmakers":"Casas"}),
-                hide_index=True,
-                use_container_width=True,
+        with st.expander("🧪 Diagnóstico del motor · embudo de Top Picks"):
+            reason_labels = {
+                "TOP_PICK": "🏆 Top Pick",
+                "SIN_MERCADO": "❌ Sin mercado pre-match",
+                "PARTIDO_INICIADO": "🔒 Partido iniciado",
+                "CUOTA_FUERA_RANGO": "↔️ Cuota fuera de 1.50–3.00",
+                "PROB_SELECCION_BAJA": "📉 Prob. selección <60%",
+                "EV_INSUFICIENTE": "🧮 EV < +5%",
+                "POCAS_CASAS": "🏦 Menos de 2 casas",
+                "SIN_CLASIFICAR": "❔ Sin clasificar",
+            }
+
+            today_mask = (
+                pd.to_datetime(
+                    raw["Fecha"],
+                    errors="coerce"
+                ).dt.date
+                ==
+                hoy
             )
+
+            diag_today = raw.loc[
+                today_mask
+            ].copy()
+
+            total_today = len(
+                diag_today
+            )
+
+            market_today = int(
+                diag_today[
+                    "_market_available"
+                ].sum()
+            ) if total_today else 0
+
+            final_today = int(
+                diag_today[
+                    "_pick_qualifies"
+                ].sum()
+            ) if total_today else 0
+
+            f1, f2, f3 = st.columns(3)
+            f1.metric("Partidos de hoy", total_today)
+            f2.metric("Con mercado pre-match", market_today)
+            f3.metric("Top Picks finales", final_today)
+
+            if total_today:
+                reason_counts = (
+                    diag_today[
+                        "_pick_reason"
+                    ]
+                    .fillna(
+                        "SIN_CLASIFICAR"
+                    )
+                    .value_counts()
+                )
+
+                funnel_rows = []
+
+                for reason, count in reason_counts.items():
+                    funnel_rows.append(
+                        {
+                            "Resultado": reason_labels.get(
+                                str(reason),
+                                str(reason)
+                            ),
+                            "Partidos": int(count),
+                            "% de hoy": (
+                                f"{int(count) / total_today:.1%}"
+                                if total_today
+                                else "-"
+                            ),
+                        }
+                    )
+
+                st.dataframe(
+                    pd.DataFrame(
+                        funnel_rows
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            diag = diag_today[[
+                "Fecha","Hora","Jugador 1","Jugador 2",
+                "_candidate_selection",
+                "_candidate_probability",
+                "_candidate_odds",
+                "_candidate_ev",
+                "_pick_reason",
+                "_market_quality",
+                "_valid_bookmakers",
+                "_pick_qualifies",
+            ]].copy()
+
+            if not diag.empty:
+                diag["Partido"] = (
+                    diag["Jugador 1"]
+                    + " vs "
+                    + diag["Jugador 2"]
+                )
+
+                diag["Candidato"] = diag[
+                    "_candidate_selection"
+                ].fillna("-")
+
+                diag["Prob. candidato"] = diag[
+                    "_candidate_probability"
+                ].map(
+                    lambda x: "-"
+                    if pd.isna(x)
+                    else f"{float(x):.1%}"
+                )
+
+                diag["Cuota candidato"] = diag[
+                    "_candidate_odds"
+                ].map(
+                    lambda x: "-"
+                    if pd.isna(x)
+                    else f"{float(x):.2f}"
+                )
+
+                diag["EV candidato"] = diag[
+                    "_candidate_ev"
+                ].map(
+                    lambda x: "-"
+                    if pd.isna(x)
+                    else f"{float(x):+.1%}"
+                )
+
+                diag["Motivo"] = diag[
+                    "_pick_reason"
+                ].map(
+                    lambda x: reason_labels.get(
+                        str(x),
+                        str(x)
+                    )
+                )
+
+                diag["Top Pick"] = diag[
+                    "_pick_qualifies"
+                ].map(
+                    lambda x: "🏆"
+                    if x
+                    else "-"
+                )
+
+                st.dataframe(
+                    diag[[
+                        "Hora",
+                        "Partido",
+                        "Candidato",
+                        "Prob. candidato",
+                        "Cuota candidato",
+                        "EV candidato",
+                        "Motivo",
+                        "_market_quality",
+                        "_valid_bookmakers",
+                        "Top Pick",
+                    ]].rename(
+                        columns={
+                            "_market_quality": "Calidad mercado",
+                            "_valid_bookmakers": "Casas",
+                        }
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
 
     except Exception as exc:
         st.error("No se pudieron calcular los Top Picks.")

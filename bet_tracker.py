@@ -11,8 +11,14 @@ from live_results import get_live_match_result
 
 DB_PATH = Path("tennis_edge.db")
 
-MIN_MATCH_CONFIDENCE = 0.70
+# V3.2 · TOP PICKS QUALITY
+# La probabilidad mínima se aplica A LA SELECCIÓN apostada,
+# no a la confianza del lado favorito del partido.
+MIN_PICK_PROBABILITY = 0.60
+MIN_ODDS = 1.50
+MAX_ODDS = 3.00
 MIN_EV = 0.05
+MIN_VALID_BOOKMAKERS = 2
 STAKE = 1.0
 LIVE_CHECK_MINUTES = 30
 MAX_LIVE_CHECKS_PER_RUN = 8
@@ -470,97 +476,104 @@ def evaluar_pick_automatico(
     df
 ):
     """
+    V3.2 · TOP PICKS QUALITY
+
     Registra como máximo UN pick por partido.
 
-    Regla inicial:
-    - confianza del partido >= 70%
-    - EV del lado elegido >= +5%
-    - mercado ya validado por odds_api.py
-    - elegimos el lado con mayor EV
+    Reglas principales:
+    - probabilidad DEL LADO ELEGIDO >= 60%
+    - cuota entre 1.50 y 3.00
+    - EV >= +5%
+    - si el mercado informa nº de casas, exigimos >= 2
+    - elegimos el mayor EV únicamente ENTRE candidatos elegibles
+
+    Cambio crítico respecto a V3.1:
+    antes se comprobaba max(prob_a, prob_b) >= 70% y DESPUÉS
+    se elegía el mayor EV. Eso permitía que un underdog de 25%
+    fuese Top Pick si el otro jugador tenía 75% de probabilidad.
     """
     if not datos_cuotas:
         return {
             "qualifies": False,
             "inserted": False,
             "label": "-",
+            "reason": "SIN_MERCADO",
         }
 
-    prob_a = float(
-        prob_a
-    )
+    prob_a = float(prob_a)
+    prob_b = float(prob_b)
 
-    prob_b = float(
-        prob_b
-    )
+    cuota_a = float(datos_cuotas["cuota_a"])
+    cuota_b = float(datos_cuotas["cuota_b"])
 
-    cuota_a = float(
-        datos_cuotas[
-            "cuota_a"
-        ]
-    )
-
-    cuota_b = float(
-        datos_cuotas[
-            "cuota_b"
-        ]
-    )
-
-    ev_a = (
-        prob_a
-        * cuota_a
-        - 1.0
-    )
-
-    ev_b = (
-        prob_b
-        * cuota_b
-        - 1.0
-    )
-
-    match_confidence = max(
-        prob_a,
-        prob_b
-    )
-
-    if match_confidence < (
-        MIN_MATCH_CONFIDENCE
-    ):
-        return {
-            "qualifies": False,
-            "inserted": False,
-            "label": "-",
-        }
+    ev_a = (prob_a * cuota_a) - 1.0
+    ev_b = (prob_b * cuota_b) - 1.0
 
     candidates = [
         {
             "selection": player_a,
             "prob": prob_a,
             "odds": cuota_a,
-            "bookmaker": (
-                datos_cuotas[
-                    "casa_a"
-                ]
-            ),
+            "bookmaker": datos_cuotas["casa_a"],
             "ev": ev_a,
         },
         {
             "selection": player_b,
             "prob": prob_b,
             "odds": cuota_b,
-            "bookmaker": (
-                datos_cuotas[
-                    "casa_b"
-                ]
-            ),
+            "bookmaker": datos_cuotas["casa_b"],
             "ev": ev_b,
         },
     ]
 
-    best = max(
+    # Guardamos el mejor EV bruto sólo para diagnóstico.
+    raw_best = max(
         candidates,
-        key=lambda item: item[
-            "ev"
-        ]
+        key=lambda item: item["ev"]
+    )
+
+    in_odds_range = [
+        item for item in candidates
+        if MIN_ODDS <= item["odds"] <= MAX_ODDS
+    ]
+
+    if not in_odds_range:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "CUOTA_FUERA_RANGO",
+            "candidate_selection": raw_best["selection"],
+            "candidate_probability": raw_best["prob"],
+            "candidate_odds": raw_best["odds"],
+            "candidate_ev": raw_best["ev"],
+        }
+
+    eligible_probability = [
+        item for item in in_odds_range
+        if item["prob"] >= MIN_PICK_PROBABILITY
+    ]
+
+    if not eligible_probability:
+        best_range = max(
+            in_odds_range,
+            key=lambda item: item["ev"]
+        )
+
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "PROB_SELECCION_BAJA",
+            "candidate_selection": best_range["selection"],
+            "candidate_probability": best_range["prob"],
+            "candidate_odds": best_range["odds"],
+            "candidate_ev": best_range["ev"],
+        }
+
+    best = max(
+        eligible_probability,
+        key=lambda item: item["ev"]
     )
 
     if best["ev"] < MIN_EV:
@@ -568,30 +581,44 @@ def evaluar_pick_automatico(
             "qualifies": False,
             "inserted": False,
             "label": "-",
+            "reason": "EV_INSUFICIENTE",
+            "candidate_selection": best["selection"],
+            "candidate_probability": best["prob"],
+            "candidate_odds": best["odds"],
+            "candidate_ev": best["ev"],
         }
 
-    implied_prob = (
-        1.0
-        / best[
-            "odds"
-        ]
-    )
+    valid_bookmakers_raw = datos_cuotas.get("casas_validas", None)
+
+    # Compatibilidad: si el proveedor antiguo no trae esta métrica,
+    # no bloqueamos. Si sí la trae, exigimos al menos dos casas.
+    if valid_bookmakers_raw is not None:
+        try:
+            valid_bookmakers_check = int(valid_bookmakers_raw or 0)
+        except Exception:
+            valid_bookmakers_check = 0
+
+        if valid_bookmakers_check < MIN_VALID_BOOKMAKERS:
+            return {
+                "qualifies": False,
+                "inserted": False,
+                "label": "-",
+                "reason": "POCAS_CASAS",
+                "candidate_selection": best["selection"],
+                "candidate_probability": best["prob"],
+                "candidate_odds": best["odds"],
+                "candidate_ev": best["ev"],
+            }
+
+    implied_prob = 1.0 / best["odds"]
 
     fair_odds = (
-        1.0
-        / best[
-            "prob"
-        ]
-        if best[
-            "prob"
-        ] > 0
+        1.0 / best["prob"]
+        if best["prob"] > 0
         else None
     )
 
-    edge = (
-        best["prob"]
-        - implied_prob
-    )
+    edge = best["prob"] - implied_prob
 
     pick_key = _match_key(
         partido,
@@ -599,19 +626,15 @@ def evaluar_pick_automatico(
         player_b
     )
 
-    h2h_count = (
-        contar_h2h_actual(
-            df,
-            player_a,
-            player_b
-        )
+    h2h_count = contar_h2h_actual(
+        df,
+        player_a,
+        player_b
     )
 
-    recorded_at = (
-        datetime.now(
-            timezone.utc
-        ).isoformat()
-    )
+    recorded_at = datetime.now(
+        timezone.utc
+    ).isoformat()
 
     inserted = False
 
@@ -627,8 +650,9 @@ def evaluar_pick_automatico(
             INSERT OR IGNORE INTO betting_picks (
                 pick_key,
                 fixture_id,
+                fixture_alt_id,
+                api_start_time,
                 event_date,
-                start_time,
                 tournament,
                 tour,
                 surface,
@@ -656,7 +680,7 @@ def evaluar_pick_automatico(
                 recorded_at
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?,
                 ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?,
@@ -667,112 +691,39 @@ def evaluar_pick_automatico(
             (
                 pick_key,
                 fixture_id_primary,
-                _clean(
-                    partido.get(
-                        "event_date"
-                    )
-                ),
-                _clean(
-                    partido.get(
-                        "start_time"
-                    )
-                ),
-                _clean(
-                    partido.get(
-                        "tournament"
-                    )
-                ),
-                _clean(
-                    partido.get(
-                        "tour"
-                    )
-                ),
-                _clean(
-                    partido.get(
-                        "surface"
-                    )
-                ),
+                fixture_id_alt,
+                _clean(partido.get("start_time")),
+                _clean(partido.get("event_date")),
+                _clean(partido.get("tournament")),
+                _clean(partido.get("tour")),
+                _clean(partido.get("surface")),
                 player_a,
                 player_b,
-                best[
-                    "selection"
-                ],
+                best["selection"],
                 prob_a,
                 prob_b,
-                best[
-                    "prob"
-                ],
-                match_confidence,
-                _clean(
-                    prediccion.get(
-                        "confidence_label"
-                    )
-                ),
-                best[
-                    "odds"
-                ],
-                best[
-                    "bookmaker"
-                ],
+                best["prob"],
+                max(prob_a, prob_b),
+                _clean(prediccion.get("confidence_label")),
+                best["odds"],
+                best["bookmaker"],
                 fair_odds,
                 implied_prob,
                 edge,
-                best[
-                    "ev"
-                ],
-                _clean(
-                    datos_cuotas.get(
-                        "calidad_mercado"
-                    )
-                ),
-                int(
-                    datos_cuotas.get(
-                        "casas_validas",
-                        0
-                    )
-                    or 0
-                ),
-                int(
-                    datos_cuotas.get(
-                        "outliers_descartados",
-                        0
-                    )
-                    or 0
-                ),
-                _clean(
-                    prediccion.get(
-                        "model_version"
-                    )
-                ),
+                best["ev"],
+                _clean(datos_cuotas.get("calidad_mercado")),
+                int(datos_cuotas.get("casas_validas", 0) or 0),
+                int(datos_cuotas.get("outliers_descartados", 0) or 0),
+                _clean(prediccion.get("model_version")),
                 STAKE,
                 h2h_count,
                 recorded_at,
             )
         )
 
-        inserted = (
-            cursor.rowcount
-            == 1
-        )
+        inserted = cursor.rowcount == 1
 
-        conn.execute(
-            """
-            UPDATE betting_picks
-            SET
-                fixture_id = ?,
-                fixture_alt_id = ?
-            WHERE pick_key = ?
-            """,
-            (
-                fixture_id_primary,
-                fixture_id_alt,
-                pick_key,
-            )
-        )
-
-    icon = _categoria_value(
-        best["ev"]
-    )
+    icon = _categoria_value(best["ev"])
 
     label = (
         f"{icon} "
@@ -784,15 +735,16 @@ def evaluar_pick_automatico(
         "qualifies": True,
         "inserted": inserted,
         "label": label,
-        "selection": best[
-            "selection"
-        ],
-        "odds": best[
-            "odds"
-        ],
-        "ev": best[
-            "ev"
-        ],
+        "reason": "TOP_PICK",
+        "selection": best["selection"],
+        "probability": best["prob"],
+        "odds": best["odds"],
+        "ev": best["ev"],
+        "bookmaker": best["bookmaker"],
+        "candidate_selection": best["selection"],
+        "candidate_probability": best["prob"],
+        "candidate_odds": best["odds"],
+        "candidate_ev": best["ev"],
     }
 
 
