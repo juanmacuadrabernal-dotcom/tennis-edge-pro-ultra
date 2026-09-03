@@ -326,6 +326,89 @@ def aplicar_estilo_premium():
             .tep-right-stack{grid-column:auto;grid-template-columns:1fr;}
             .tep-pick-head,.tep-pick-row{grid-template-columns:1.4fr .8fr .55fr .55fr;}
             .tep-pick-head > :last-child,.tep-pick-row > :last-child{display:none;}
+
+            /* =====================================================
+               V13.5 · NAVEGACIÓN MÓVIL
+               En escritorio ocultamos el chrome de Streamlit, pero
+               en móvil necesitamos conservar el control nativo que
+               abre/cierra el sidebar.
+               ===================================================== */
+            header[data-testid="stHeader"] {
+                display:block !important;
+                height:3.45rem !important;
+                min-height:3.45rem !important;
+                background:rgba(6,17,29,.96) !important;
+                border-bottom:1px solid rgba(112,169,216,.14) !important;
+                backdrop-filter:blur(12px);
+                -webkit-backdrop-filter:blur(12px);
+                z-index:999998 !important;
+            }
+
+            [data-testid="stSidebarCollapsedControl"],
+            [data-testid="stSidebarCollapseButton"] {
+                display:flex !important;
+                visibility:visible !important;
+                opacity:1 !important;
+                pointer-events:auto !important;
+                z-index:1000001 !important;
+            }
+
+            [data-testid="stSidebarCollapsedControl"] {
+                position:fixed !important;
+                top:.48rem !important;
+                left:.55rem !important;
+            }
+
+            [data-testid="stSidebarCollapsedControl"] button,
+            [data-testid="stSidebarCollapseButton"] button,
+            button[data-testid="stSidebarCollapseButton"] {
+                display:flex !important;
+                align-items:center !important;
+                justify-content:center !important;
+                width:42px !important;
+                height:42px !important;
+                min-width:42px !important;
+                min-height:42px !important;
+                border-radius:11px !important;
+                border:1px solid rgba(32,214,232,.34) !important;
+                background:linear-gradient(145deg,rgba(13,49,72,.97),rgba(7,31,50,.97)) !important;
+                color:#f4fbff !important;
+                box-shadow:0 8px 24px rgba(0,0,0,.22) !important;
+            }
+
+            [data-testid="stSidebar"] {
+                width:min(88vw,330px) !important;
+                min-width:min(88vw,330px) !important;
+                z-index:1000000 !important;
+                box-shadow:18px 0 48px rgba(0,0,0,.34) !important;
+            }
+
+            [data-testid="stSidebar"] > div:first-child {
+                padding-top:.65rem !important;
+            }
+
+            .block-container {
+                padding-top:4.25rem !important;
+                padding-left:.9rem !important;
+                padding-right:.9rem !important;
+                padding-bottom:3rem !important;
+            }
+
+            .tep-title{font-size:1.65rem;}
+            .tep-kpi-grid{grid-template-columns:1fr 1fr;gap:.65rem;}
+            .tep-kpi{min-height:105px;padding:.85rem .9rem;}
+            .tep-kpi-value{font-size:1.3rem;}
+            .tep-status-wrap{width:100%;}
+            .tep-chip{flex:1 1 125px;min-width:0;}
+        }
+
+        @media(max-width:560px){
+            .tep-kpi-grid{grid-template-columns:1fr;}
+            .tep-pick-head,.tep-pick-row{grid-template-columns:1.35fr .75fr .52fr;}
+            .tep-pick-head > :nth-child(4),.tep-pick-row > :nth-child(4){display:none;}
+            .tep-player-name{font-size:.78rem!important;}
+            .tep-players{grid-template-columns:1fr 44px 1fr;}
+            .tep-avatar{width:66px;height:66px;}
         }
 
         @media(max-width:1000px){.tep-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.tep-header{flex-direction:column;}.tep-status-wrap{justify-content:flex-start;}}
