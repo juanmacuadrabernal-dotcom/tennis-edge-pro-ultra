@@ -328,7 +328,7 @@ def aplicar_estilo_premium():
             .tep-pick-head > :last-child,.tep-pick-row > :last-child{display:none;}
 
             /* =====================================================
-               V13.5.1 · NAVEGACIÓN MÓVIL · DRAWER NATIVO
+               V13.5.2 · NAVEGACIÓN MÓVIL · MENÚ SEGURO
                En escritorio ocultamos el chrome de Streamlit, pero
                en móvil necesitamos conservar el control nativo que
                abre/cierra el sidebar.
@@ -342,6 +342,18 @@ def aplicar_estilo_premium():
                 backdrop-filter:blur(12px);
                 -webkit-backdrop-filter:blur(12px);
                 z-index:999998 !important;
+            }
+
+            /* CLAVE V13.5.2:
+               arriba ocultamos stToolbar globalmente. En móvil lo
+               recuperamos porque el control para reabrir el sidebar
+               puede vivir dentro de este contenedor. */
+            [data-testid="stToolbar"] {
+                display:flex !important;
+                visibility:visible !important;
+                opacity:1 !important;
+                pointer-events:auto !important;
+                z-index:1000002 !important;
             }
 
             [data-testid="stSidebarCollapsedControl"],
@@ -361,7 +373,9 @@ def aplicar_estilo_premium():
 
             [data-testid="stSidebarCollapsedControl"] button,
             [data-testid="stSidebarCollapseButton"] button,
-            button[data-testid="stSidebarCollapseButton"] {
+            button[data-testid="stSidebarCollapseButton"],
+            button[data-testid="stSidebarCollapsedControl"],
+            header[data-testid="stHeader"] button[kind="headerNoPadding"] {
                 display:flex !important;
                 align-items:center !important;
                 justify-content:center !important;
@@ -3157,6 +3171,47 @@ def render_resultados_live_page(df):
     )
 
 
+# =========================================================
+# V13.5.2 · NAVEGACIÓN SEGURA
+# El sidebar sigue existiendo, pero además tenemos un selector
+# superior que evita quedarse bloqueado si Safari/Chrome ocultan
+# el botón nativo de Streamlit.
+# =========================================================
+NAV_OPTIONS = [
+    "⌂  Dashboard",
+    "▣  Próximos partidos",
+    "☆  Top Picks",
+    "▥  Rendimiento",
+    "◉  Resultados live",
+    "◈  Modelo / Analizador",
+]
+
+if "tep_nav" not in st.session_state:
+    st.session_state["tep_nav"] = NAV_OPTIONS[0]
+
+if "tep_nav_mobile_safe" not in st.session_state:
+    st.session_state["tep_nav_mobile_safe"] = st.session_state["tep_nav"]
+
+
+def _sync_nav_mobile_safe():
+    st.session_state["tep_nav"] = st.session_state["tep_nav_mobile_safe"]
+
+
+def _sync_nav_sidebar_safe():
+    st.session_state["tep_nav_mobile_safe"] = st.session_state["tep_nav"]
+
+
+st.selectbox(
+    "☰  MENÚ",
+    NAV_OPTIONS,
+    key="tep_nav_mobile_safe",
+    on_change=_sync_nav_mobile_safe,
+    help="Menú de navegación siempre disponible aunque el sidebar esté cerrado.",
+)
+
+pagina_actual = st.session_state["tep_nav"]
+
+
 with st.sidebar:
     st.markdown(
         """
@@ -3168,19 +3223,15 @@ with st.sidebar:
         unsafe_allow_html=True
     )
 
-    pagina_actual = st.radio(
+    st.radio(
         "Navegación",
-        [
-            "⌂  Dashboard",
-            "▣  Próximos partidos",
-            "☆  Top Picks",
-            "▥  Rendimiento",
-            "◉  Resultados live",
-            "◈  Modelo / Analizador",
-        ],
+        NAV_OPTIONS,
         label_visibility="collapsed",
         key="tep_nav",
+        on_change=_sync_nav_sidebar_safe,
     )
+
+    pagina_actual = st.session_state["tep_nav"]
     last = get_last_update() or "Sin actualizar"
 
     if st.button(
