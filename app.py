@@ -328,7 +328,7 @@ def aplicar_estilo_premium():
             .tep-pick-head > :last-child,.tep-pick-row > :last-child{display:none;}
 
             /* =====================================================
-               V13.5 · NAVEGACIÓN MÓVIL
+               V13.5.1 · NAVEGACIÓN MÓVIL · DRAWER NATIVO
                En escritorio ocultamos el chrome de Streamlit, pero
                en móvil necesitamos conservar el control nativo que
                abre/cierra el sidebar.
@@ -376,9 +376,12 @@ def aplicar_estilo_premium():
                 box-shadow:0 8px 24px rgba(0,0,0,.22) !important;
             }
 
+            /* V13.5.1:
+               NO forzamos el ancho del sidebar.
+               Streamlit controla su ancho + transform de apertura/cierre.
+               Al forzar 88vw, al cerrarlo quedaba una franja visible
+               de ~40-50 px en iPhone (justo lo que veíamos en pantalla). */
             [data-testid="stSidebar"] {
-                width:min(88vw,330px) !important;
-                min-width:min(88vw,330px) !important;
                 z-index:1000000 !important;
                 box-shadow:18px 0 48px rgba(0,0,0,.34) !important;
             }
