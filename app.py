@@ -1,4 +1,4 @@
-# BUILD: V13.5.3 · MOBILE SAFE + TOP PICKS QUALITY
+# BUILD: V13.5.4 · MOBILE SAFE + TOP PICKS QUALITY + EUROPE/MADRID DATE
 import os
 import html
 import textwrap
@@ -1042,7 +1042,7 @@ def render_dashboard_premium_v13(
             errors="coerce"
         )
 
-        hoy = pd.Timestamp.now().date()
+        hoy = pd.Timestamp.now(tz="Europe/Madrid").date()
 
         top = raw.loc[
             (
@@ -3033,7 +3033,7 @@ def render_top_picks_page(df, ventana, usar_elo, data_version):
 
         raw = pd.DataFrame(filas)
         fechas = pd.to_datetime(raw["Fecha"], errors="coerce")
-        hoy = pd.Timestamp.now().date()
+        hoy = pd.Timestamp.now(tz="Europe/Madrid").date()
         mask = (fechas.dt.date == hoy) & (raw["_pick_qualifies"] == True)
         top = raw.loc[mask].copy().sort_values("_value_score", ascending=False)
 
@@ -3694,7 +3694,7 @@ def render_proximos_partidos(df, ventana, usar_elo):
                 st.markdown('<div id="top-picks"></div>', unsafe_allow_html=True)
                 st.markdown('<div class="tep-section-title">🏆 Top Picks del Día</div>', unsafe_allow_html=True)
 
-                hoy = pd.Timestamp.now().date()
+                hoy = pd.Timestamp.now(tz="Europe/Madrid").date()
 
                 fechas_parseadas = pd.to_datetime(
                     tabla_proximos_raw[
