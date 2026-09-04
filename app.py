@@ -1,4 +1,4 @@
-# BUILD: V13.5.5 · MOBILE SAFE + TOP PICKS QUALITY + ODDS MATCH DEBUG
+# BUILD: V13.5.6 · MOBILE SAFE + TOP PICKS QUALITY + ODDS PIPELINE DEBUG
 import os
 import html
 import textwrap
@@ -3454,6 +3454,167 @@ def render_top_picks_page(df, ventana, usar_elo, data_version):
                     ),
                     hide_index=True,
                     use_container_width=True,
+                )
+
+            # =====================================================
+            # V13.5.6 · PIPELINE DE CUOTAS
+            # Distingue:
+            # RAW Odds API -> índice saneado -> buscar_mejores_cuotas
+            # -> mercado final usado por la app.
+            # =====================================================
+            st.markdown(
+                "#### 🧬 Pipeline de cuotas · sólo coincidencias exactas"
+            )
+
+            debug_index = construir_indice_cuotas(
+                odds_events
+            )
+
+            pipeline_rows = []
+
+            for _, row in diag_today.iterrows():
+                live_a = str(
+                    row.get(
+                        "_player1_full",
+                        row.get(
+                            "Jugador 1",
+                            ""
+                        )
+                    )
+                    or ""
+                ).strip()
+
+                live_b = str(
+                    row.get(
+                        "_player2_full",
+                        row.get(
+                            "Jugador 2",
+                            ""
+                        )
+                    )
+                    or ""
+                ).strip()
+
+                a_norm = normalizar_nombre(
+                    live_a
+                )
+                b_norm = normalizar_nombre(
+                    live_b
+                )
+
+                key = tuple(
+                    sorted(
+                        (
+                            a_norm,
+                            b_norm
+                        )
+                    )
+                )
+
+                raw_exact = key in odds_keys
+                if not raw_exact:
+                    continue
+
+                indexed_event = debug_index.get(
+                    key
+                )
+
+                index_ok = indexed_event is not None
+
+                market_ok_raw = "-"
+                valid_books = "-"
+                cuotas_keys = "-"
+
+                if indexed_event is not None:
+                    if "market_ok" in indexed_event:
+                        market_ok_raw = (
+                            "✅"
+                            if indexed_event.get(
+                                "market_ok",
+                                False
+                            )
+                            else "❌"
+                        )
+                    else:
+                        market_ok_raw = "LEGACY"
+
+                    valid_books = indexed_event.get(
+                        "valid_bookmakers",
+                        indexed_event.get(
+                            "casas_validas",
+                            "-"
+                        )
+                    )
+
+                    cuotas_keys = ", ".join(
+                        sorted(
+                            indexed_event.get(
+                                "cuotas",
+                                {}
+                            ).keys()
+                        )
+                    ) or "-"
+
+                lookup = buscar_mejores_cuotas(
+                    debug_index,
+                    live_a,
+                    live_b
+                )
+
+                lookup_ok = lookup is not None
+
+                final_market = bool(
+                    row.get(
+                        "_market_available",
+                        False
+                    )
+                )
+
+                pipeline_rows.append(
+                    {
+                        "Partido": (
+                            f"{live_a} vs {live_b}"
+                        ),
+                        "RAW exacto": "✅",
+                        "En índice": (
+                            "✅"
+                            if index_ok
+                            else "❌"
+                        ),
+                        "Market OK": market_ok_raw,
+                        "Casas válidas": valid_books,
+                        "Lookup cuotas": (
+                            "✅"
+                            if lookup_ok
+                            else "❌"
+                        ),
+                        "Mercado final app": (
+                            "✅"
+                            if final_market
+                            else "❌"
+                        ),
+                        "Nombres con cuota": cuotas_keys,
+                    }
+                )
+
+            if pipeline_rows:
+                st.dataframe(
+                    pd.DataFrame(
+                        pipeline_rows
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+                st.caption(
+                    "Lectura rápida: RAW exacto ✅ + Lookup cuotas ❌ = "
+                    "el problema está en odds_api.py / filtros del mercado. "
+                    "Lookup cuotas ✅ + Mercado final app ❌ = el problema está "
+                    "en la protección PRE-MATCH/snapshot."
+                )
+            else:
+                st.info(
+                    "No hay coincidencias exactas que puedan recorrer el pipeline."
                 )
 
             st.markdown(
