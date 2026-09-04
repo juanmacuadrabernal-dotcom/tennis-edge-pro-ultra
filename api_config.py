@@ -1,9 +1,9 @@
 """
 Configuración segura para Tennis Edge Pro.
 
-- En Streamlit Community Cloud lee las claves desde st.secrets.
-- En local también admite variables de entorno.
-- Este archivo NO contiene ninguna clave privada y sí puede subirse a GitHub.
+- Streamlit Cloud: lee las claves desde st.secrets.
+- Local: admite variables de entorno.
+- No contiene claves privadas.
 """
 
 import os
@@ -15,12 +15,10 @@ except Exception:
 
 
 def _get_secret(name: str, default: str = "") -> str:
-    # 1) Variable de entorno
     value = os.getenv(name)
     if value:
         return str(value).strip()
 
-    # 2) Streamlit Secrets
     if st is not None:
         try:
             value = st.secrets.get(name, default)
@@ -34,3 +32,10 @@ def _get_secret(name: str, default: str = "") -> str:
 
 THE_ODDS_API_KEY = _get_secret("THE_ODDS_API_KEY")
 LIVE_TENNIS_API_KEY = _get_secret("LIVE_TENNIS_API_KEY")
+
+# OddsPapi (proveedor secundario de cobertura)
+ODDSPAPI_API_KEY = _get_secret("ODDSPAPI_API_KEY")
+
+# Opcional: slugs separados por comas.
+# Si se deja vacío, OddsPapi devuelve las casas disponibles en tu plan.
+ODDSPAPI_BOOKMAKERS = _get_secret("ODDSPAPI_BOOKMAKERS")
