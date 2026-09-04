@@ -1,11 +1,11 @@
 """
 Tennis Edge Pro · upcoming_matches.py
-Versión estable compatible con Live Tennis API (2026-09).
+FIX V3 — compatible con Live Tennis API OpenAPI 1.3.1
 
-IMPORTANTE:
-- /fixtures devuelve player1_name / player2_name EN PLANO.
-- La app espera una LISTA de diccionarios con player1 / player2.
-- Una sola llamada trae fixtures y filtramos ATP + Challenger localmente.
+Motivo del fix:
+- /fixtures SOLO acepta: tour, limit, offset.
+- La versión anterior enviaba draw=singles -> parámetro no soportado.
+- Consultamos ATP y Challenger por separado usando el filtro oficial.
 """
 
 import requests
@@ -17,10 +17,6 @@ BASE_URL = "https://api.livetennisapi.com/api/public/v1"
 
 
 def _headers():
-    """
-    Live Tennis API acepta ambos esquemas.
-    Enviamos los dos para máxima compatibilidad.
-    """
     return {
         "Authorization": f"Bearer {LIVE_TENNIS_API_KEY}",
         "X-API-Key": LIVE_TENNIS_API_KEY,
@@ -28,52 +24,188 @@ def _headers():
     }
 
 
-def _is_atp_or_challenger(fixture):
+def _fetch_fixture_page(tour, limit=200, offset=0):
     """
-    El campo 'tour' puede ser granular (p.ej. challenger_men).
-    Si viene vacío, usamos el nombre del torneo como fallback.
+    /fixtures acepta oficialmente:
+    - tour
+    - limit
+    - offset
     """
-    tour = str(
-        fixture.get("tour", "")
+    params = {
+        "tour": tour,
+        "limit": limit,
+        "offset": offset,
+    }
+
+    response = requests.get(
+        f"{BASE_URL}/fixtures",
+        headers=_headers(),
+        params=params,
+        timeout=30,
+    )
+
+    if response.status_code != 200:
+        body = str(
+            response.text
+            or ""
+        ).strip()
+
+        if len(body) > 1000:
+            body = body[:1000] + "..."
+
+        retry_after = response.headers.get(
+            "Retry-After"
+        )
+
+        print(
+            "Error Live Tennis API /fixtures "
+            f"(tour={tour}): HTTP {response.status_code}"
+            + (
+                f" · Retry-After={retry_after}"
+                if retry_after
+                else ""
+            )
+            + (
+                f" · {body}"
+                if body
+                else ""
+            )
+        )
+
+        return [], {
+            "has_more": False,
+            "total": None,
+        }
+
+    try:
+        payload = response.json()
+    except ValueError:
+        print(
+            "Error Live Tennis API /fixtures "
+            f"(tour={tour}): JSON inválido."
+        )
+        return [], {
+            "has_more": False,
+            "total": None,
+        }
+
+    if not isinstance(payload, dict):
+        print(
+            "Error Live Tennis API /fixtures "
+            f"(tour={tour}): formato inesperado."
+        )
+        return [], {
+            "has_more": False,
+            "total": None,
+        }
+
+    data = payload.get(
+        "data",
+        []
+    )
+
+    meta = payload.get(
+        "meta",
+        {}
+    )
+
+    if not isinstance(data, list):
+        data = []
+
+    if not isinstance(meta, dict):
+        meta = {}
+
+    return data, meta
+
+
+def _normalize_fixture(match):
+    if not isinstance(match, dict):
+        return None
+
+    player1 = str(
+        match.get("player1_name", "")
         or ""
-    ).strip().lower()
+    ).strip()
 
-    tournament = str(
-        fixture.get("tournament", "")
+    player2 = str(
+        match.get("player2_name", "")
         or ""
-    ).strip().lower()
+    ).strip()
 
-    if (
-        "challenger" in tour
-        or tour == "atp"
-        or tour.startswith("atp_")
-    ):
-        return True
+    # Según OpenAPI los nombres están siempre presentes,
+    # pero somos conservadores si llega una fila dañada.
+    if not player1 or not player2:
+        return None
 
-    if (
-        "challenger" in tournament
-        or tournament.startswith("atp ")
-        or tournament.startswith("atp-")
-    ):
-        return True
+    fixture_id = match.get(
+        "id"
+    )
 
-    return False
+    return {
+        "id": fixture_id,
+        "match_id": fixture_id,
+
+        "event_date": (
+            match.get("event_date")
+            or ""
+        ),
+        "start_time": (
+            match.get("start_time")
+            or ""
+        ),
+
+        "player1": player1,
+        "player2": player2,
+
+        "player1_id": match.get(
+            "player1_id"
+        ),
+        "player2_id": match.get(
+            "player2_id"
+        ),
+
+        "tournament": (
+            match.get("tournament")
+            or ""
+        ),
+        "surface": (
+            match.get("surface")
+            or ""
+        ),
+        "round": (
+            match.get("round")
+            or ""
+        ),
+        "round_code": (
+            match.get("round_code")
+            or ""
+        ),
+        "tour": (
+            match.get("tour")
+            or ""
+        ),
+        "status": (
+            match.get("status")
+            or "upcoming"
+        ),
+    }
 
 
 def get_upcoming_matches(tour=None, limit=200):
     """
-    Devuelve LISTA de dicts compatible con app.py:
+    Devuelve LISTA de diccionarios compatible con app.py.
 
-    id, match_id, event_date, start_time,
-    player1, player2, player1_id, player2_id,
-    tournament, surface, round, tour, status
+    Sin tour:
+      - 1 llamada ATP
+      - 1 llamada Challenger
 
-    Si 'tour' se especifica y es atp/challenger, se envía a la API.
-    Si no, hacemos una sola llamada y filtramos ATP + Challenger localmente.
+    Con tour:
+      - sólo consulta ese tour si es válido.
     """
     if not LIVE_TENNIS_API_KEY:
         print(
-            "Error Live Tennis API: LIVE_TENNIS_API_KEY no configurada."
+            "Error Live Tennis API: "
+            "LIVE_TENNIS_API_KEY no configurada."
         )
         return []
 
@@ -90,177 +222,97 @@ def get_upcoming_matches(tour=None, limit=200):
         )
     )
 
-    params = {
-        "limit": limit,
-        "offset": 0,
-        # La app sólo trabaja con partidos individuales.
-        "draw": "singles",
-    }
-
-    requested_tour = str(
+    requested = str(
         tour
         or ""
     ).strip().lower()
 
-    # Sólo enviamos vocabulario que el endpoint acepta.
-    if requested_tour in {
-        "atp",
-        "challenger",
-    }:
-        params["tour"] = requested_tour
-
-    try:
-        response = requests.get(
-            f"{BASE_URL}/fixtures",
-            headers=_headers(),
-            params=params,
-            timeout=30,
-        )
-
-        if response.status_code != 200:
-            body = str(
-                response.text
-                or ""
-            ).strip()
-
-            if len(body) > 800:
-                body = body[:800] + "..."
-
-            retry_after = response.headers.get(
-                "Retry-After"
-            )
-
+    if requested:
+        if requested not in {
+            "atp",
+            "challenger",
+        }:
             print(
-                "Error Live Tennis API /fixtures: "
-                f"HTTP {response.status_code}"
-                + (
-                    f" · Retry-After={retry_after}"
-                    if retry_after
-                    else ""
-                )
-                + (
-                    f" · {body}"
-                    if body
-                    else ""
-                )
+                "Live Tennis API: tour no soportado "
+                f"por Tennis Edge Pro: {requested}"
             )
-
             return []
 
-        payload = response.json()
+        tours = [
+            requested
+        ]
+    else:
+        tours = [
+            "atp",
+            "challenger",
+        ]
 
-    except requests.exceptions.RequestException as exc:
+    merged = {}
+
+    for current_tour in tours:
+        try:
+            rows, meta = _fetch_fixture_page(
+                current_tour,
+                limit=limit,
+                offset=0,
+            )
+        except requests.exceptions.RequestException as exc:
+            print(
+                "Error conectando con Live Tennis API "
+                f"(tour={current_tour}): {exc}"
+            )
+            continue
+
         print(
-            f"Error conectando con Live Tennis API: {exc}"
+            "Live Tennis API /fixtures OK "
+            f"(tour={current_tour}): "
+            f"{len(rows)} recibidos"
+            + (
+                f" · total={meta.get('total')}"
+                if meta.get("total") is not None
+                else ""
+            )
+            + (
+                " · has_more=True"
+                if meta.get("has_more")
+                else ""
+            )
         )
-        return []
 
-    except ValueError:
-        print(
-            "Error Live Tennis API: /fixtures no devolvió JSON válido."
-        )
-        return []
+        for raw in rows:
+            item = _normalize_fixture(
+                raw
+            )
 
-    matches = (
-        payload.get("data", [])
-        if isinstance(payload, dict)
-        else []
+            if item is None:
+                continue
+
+            fixture_id = item.get(
+                "id"
+            )
+
+            # ID es estable según OpenAPI.
+            if fixture_id is not None:
+                key = (
+                    "id",
+                    str(fixture_id)
+                )
+            else:
+                key = (
+                    "fallback",
+                    str(item.get("event_date", "")),
+                    str(item.get("start_time", "")),
+                    item["player1"].lower(),
+                    item["player2"].lower(),
+                )
+
+            merged[key] = item
+
+    result = list(
+        merged.values()
     )
 
-    if not isinstance(matches, list):
-        print(
-            "Error Live Tennis API: formato inesperado en /fixtures."
-        )
-        return []
-
-    rows = []
-
-    for match in matches:
-        if not isinstance(match, dict):
-            continue
-
-        # Si no se pidió un tour concreto, dejamos sólo ATP + Challenger.
-        if not requested_tour and not _is_atp_or_challenger(match):
-            continue
-
-        # ESQUEMA REAL DE /fixtures:
-        # player1_name / player2_name son campos planos.
-        player1 = str(
-            match.get("player1_name", "")
-            or ""
-        ).strip()
-
-        player2 = str(
-            match.get("player2_name", "")
-            or ""
-        ).strip()
-
-        # Sin los dos nombres el modelo no puede resolver el partido.
-        if not player1 or not player2:
-            continue
-
-        fixture_id = match.get("id")
-
-        event_date = (
-            match.get("event_date")
-            or ""
-        )
-
-        start_time = (
-            match.get("start_time")
-            or ""
-        )
-
-        rows.append(
-            {
-                "id": fixture_id,
-                # Conservamos ambos nombres porque el lock pre-match
-                # y el tracker ya contemplan los dos campos.
-                "match_id": fixture_id,
-
-                "event_date": event_date,
-                "start_time": start_time,
-
-                "player1": player1,
-                "player2": player2,
-
-                "player1_id": match.get(
-                    "player1_id"
-                ),
-                "player2_id": match.get(
-                    "player2_id"
-                ),
-
-                "tournament": (
-                    match.get("tournament")
-                    or ""
-                ),
-                "surface": (
-                    match.get("surface")
-                    or ""
-                ),
-                "round": (
-                    match.get("round")
-                    or match.get("round_code")
-                    or ""
-                ),
-                "round_code": (
-                    match.get("round_code")
-                    or ""
-                ),
-                "tour": (
-                    match.get("tour")
-                    or ""
-                ),
-                "status": (
-                    match.get("status")
-                    or "upcoming"
-                ),
-            }
-        )
-
-    # Orden determinista: fecha + hora + torneo.
-    rows.sort(
+    result.sort(
         key=lambda item: (
             str(
                 item.get(
@@ -290,12 +342,11 @@ def get_upcoming_matches(tour=None, limit=200):
     )
 
     print(
-        "Live Tennis API /fixtures OK: "
-        f"{len(matches)} recibidos · "
-        f"{len(rows)} ATP/Challenger singles válidos."
+        "Tennis Edge Pro próximos partidos: "
+        f"{len(result)} ATP + Challenger."
     )
 
-    return rows
+    return result
 
 
 if __name__ == "__main__":
@@ -305,10 +356,11 @@ if __name__ == "__main__":
         f"Próximos ATP/Challenger: {len(upcoming)}"
     )
 
-    for item in upcoming[:20]:
+    for item in upcoming[:30]:
         print(
             f"{item.get('event_date')} "
             f"{item.get('start_time')} · "
+            f"{item.get('tour')} · "
             f"{item.get('tournament')} · "
             f"{item.get('player1')} vs "
             f"{item.get('player2')}"
