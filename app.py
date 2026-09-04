@@ -1,4 +1,4 @@
-# BUILD: V13.5.9 · STALE STATUS FIX + TOP PICKS QUALITY
+# BUILD: V13.5.11 · LIGHT MENU · DASHBOARD + PARTIDOS + ANALIZADOR
 import os
 import html
 import textwrap
@@ -25,8 +25,6 @@ from model_v42 import (
 from ratings import player_elo_table
 from bet_tracker import (
     evaluar_pick_automatico,
-    resolver_picks_live,
-    resolver_picks_pendientes,
     get_track_record,
 )
 
@@ -3836,16 +3834,21 @@ def render_resultados_live_page(df):
 NAV_OPTIONS = [
     "⌂  Dashboard",
     "▣  Próximos partidos",
-    "☆  Top Picks",
-    "▥  Rendimiento",
-    "◉  Resultados live",
     "◈  Modelo / Analizador",
 ]
 
 if "tep_nav" not in st.session_state:
     st.session_state["tep_nav"] = NAV_OPTIONS[0]
 
+# V13.5.11: si el navegador conserva una página antigua
+# (Top Picks / Rendimiento / Resultados live), volvemos al Dashboard.
+if st.session_state.get("tep_nav") not in NAV_OPTIONS:
+    st.session_state["tep_nav"] = NAV_OPTIONS[0]
+
 if "tep_nav_mobile_safe" not in st.session_state:
+    st.session_state["tep_nav_mobile_safe"] = st.session_state["tep_nav"]
+
+if st.session_state.get("tep_nav_mobile_safe") not in NAV_OPTIONS:
     st.session_state["tep_nav_mobile_safe"] = st.session_state["tep_nav"]
 
 
@@ -3905,39 +3908,10 @@ with st.sidebar:
         predict_match_cached.clear()
         clear_v42_state_cache()
 
-        try:
-            live_update = resolver_picks_live(
-                force=True,
-                max_checks=20
-            )
-
-            df_actualizado_tracker = get_matches()
-
-            liquidados_hist = resolver_picks_pendientes(
-                df_actualizado_tracker
-            )
-
-            liquidados = (
-                int(
-                    live_update.get(
-                        "resolved",
-                        0
-                    )
-                )
-                + int(
-                    liquidados_hist
-                )
-            )
-        except Exception:
-            liquidados = 0
-
+        # V13.5.11 LIGHT:
+        # Actualizar la base histórica NO dispara consultas
+        # a Live Tennis API. Así evitamos gastar cuota innecesariamente.
         st.success(msg)
-
-        if liquidados:
-            st.success(
-                f"📈 {liquidados} picks pendientes "
-                "han sido liquidados automáticamente."
-            )
 
     superficie = st.selectbox(
         "Superficie del partido",
@@ -4038,8 +4012,8 @@ def render_proximos_partidos(df, ventana, usar_elo):
     st.markdown('<div id="proximos-partidos"></div>', unsafe_allow_html=True)
     st.markdown('<div class="tep-section-title">📅 Próximos partidos ATP + Challenger</div>', unsafe_allow_html=True)
 
-    col_upcoming_1, col_upcoming_2, col_upcoming_3, col_upcoming_4 = st.columns(
-        [1, 1, 1, 2]
+    col_upcoming_1, col_upcoming_2, col_upcoming_3 = st.columns(
+        [1, 1, 3]
     )
 
     with col_upcoming_1:
@@ -4062,26 +4036,9 @@ def render_proximos_partidos(df, ventana, usar_elo):
             load_tennis_odds.clear()
 
     with col_upcoming_3:
-        if st.button(
-            "⚡ RESULTADOS LIVE",
-            use_container_width=True,
-            key="actualizar_resultados_live"
-        ):
-            live_manual = resolver_picks_live(
-                force=True,
-                max_checks=20
-            )
-
-            st.session_state[
-                "ultimo_live_manual"
-            ] = live_manual
-
-    with col_upcoming_4:
         st.caption(
-            "Cuotas: snapshot PRE-MATCH cada 15 min. "
-            "Resultados: Live Tennis API comprueba picks "
-            "pendientes automáticamente y el botón ⚡ permite "
-            "forzar una comprobación inmediata."
+            "Predicciones ATP + Challenger y cuotas PRE-MATCH. "
+            "Top Picks se muestran directamente en el Dashboard."
         )
 
 
@@ -5496,20 +5453,6 @@ if pagina_actual == "▣  Próximos partidos":
         ventana,
         usar_elo
     )
-
-elif pagina_actual == "☆  Top Picks":
-    render_top_picks_page(
-        df,
-        ventana,
-        usar_elo,
-        data_version,
-    )
-
-elif pagina_actual == "▥  Rendimiento":
-    render_rendimiento_page(df)
-
-elif pagina_actual == "◉  Resultados live":
-    render_resultados_live_page(df)
 
 
 # =====================================================
