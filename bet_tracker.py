@@ -651,7 +651,7 @@ def evaluar_pick_automatico(
                 pick_key,
                 fixture_id,
                 fixture_alt_id,
-                api_start_time,
+                start_time,
                 event_date,
                 tournament,
                 tour,
