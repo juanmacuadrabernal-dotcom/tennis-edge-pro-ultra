@@ -1,4 +1,4 @@
-# BUILD: V13.5.9 · STALE STATUS FIX + TOP PICKS QUALITY
+# BUILD: V13.5.10 · ODDS PROVIDER STATUS + TOP PICKS QUALITY
 import os
 import html
 import textwrap
@@ -3704,7 +3704,88 @@ def render_top_picks_page(df, ventana, usar_elo, data_version):
                 )
 
             st.markdown(
-                "#### 💰 Eventos que realmente devuelve The Odds API"
+                "#### 📡 Estado de proveedores de cuotas"
+            )
+
+            providers_debug = odds_result.get(
+                "providers",
+                {}
+            )
+
+            provider_rows = []
+
+            primary_debug = providers_debug.get(
+                "the_odds_api",
+                {}
+            )
+
+            provider_rows.append(
+                {
+                    "Proveedor": "The Odds API",
+                    "Activo": "✅" if primary_debug.get("ok") else "❌",
+                    "Eventos": primary_debug.get("events", 0),
+                    "Fixtures": "-",
+                    "Torneos": "-",
+                    "Detalle": "",
+                }
+            )
+
+            oddspapi_debug = providers_debug.get(
+                "oddspapi",
+                {}
+            )
+
+            discovery_debug = oddspapi_debug.get(
+                "discovery",
+                {}
+            )
+
+            detail_parts = []
+
+            if discovery_debug.get("sport_id") is not None:
+                detail_parts.append(
+                    f"sportId={discovery_debug.get('sport_id')}"
+                )
+
+            if discovery_debug.get("market_id"):
+                detail_parts.append(
+                    f"marketId={discovery_debug.get('market_id')}"
+                )
+
+            if oddspapi_debug.get("message"):
+                detail_parts.append(
+                    str(
+                        oddspapi_debug.get("message")
+                    )[:180]
+                )
+
+            provider_rows.append(
+                {
+                    "Proveedor": "OddsPapi",
+                    "Activo": (
+                        "✅"
+                        if oddspapi_debug.get("ok")
+                        else (
+                            "⚪ Sin configurar"
+                            if not oddspapi_debug.get("enabled")
+                            else "❌"
+                        )
+                    ),
+                    "Eventos": oddspapi_debug.get("events", 0),
+                    "Fixtures": oddspapi_debug.get("fixtures", 0),
+                    "Torneos": oddspapi_debug.get("tournaments", 0),
+                    "Detalle": " · ".join(detail_parts),
+                }
+            )
+
+            st.dataframe(
+                pd.DataFrame(provider_rows),
+                hide_index=True,
+                use_container_width=True,
+            )
+
+            st.markdown(
+                "#### 💰 Eventos combinados de proveedores"
             )
 
             if odds_debug_rows:
