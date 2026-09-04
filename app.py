@@ -1,17 +1,18 @@
-# BUILD: V13.5.4 · MOBILE SAFE + TOP PICKS QUALITY + EUROPE/MADRID DATE
+# BUILD: V13.5.5 · MOBILE SAFE + TOP PICKS QUALITY + ODDS MATCH DEBUG
 import os
 import html
 import textwrap
 import sqlite3
 import hashlib
 from pathlib import Path
+from difflib import SequenceMatcher
 import requests
 import streamlit as st
 import pandas as pd
 import numpy as np
 
 from upcoming_matches import get_upcoming_matches
-from player_resolver import resolver_partido
+from player_resolver import resolver_partido, normalizar_nombre
 from odds_api import get_tennis_odds, construir_indice_cuotas, buscar_mejores_cuotas
 from player_news import analyse_physical_status
 from database import init_db, get_matches, get_last_update
@@ -3242,6 +3243,234 @@ def render_top_picks_page(df, ventana, usar_elo, data_version):
                     ),
                     hide_index=True,
                     use_container_width=True,
+                )
+
+
+            # =====================================================
+            # V13.5.5 · DIAGNÓSTICO DE CRUCE LIVE TENNIS ↔ ODDS API
+            # No cambia la lógica. Sólo nos dice POR QUÉ 16 eventos
+            # de cuotas no están enlazando con los 14 partidos.
+            # =====================================================
+            st.markdown("#### 🔗 Cruce Live Tennis ↔ Odds API")
+
+            odds_events = (
+                odds_result.get(
+                    "events",
+                    []
+                )
+                if odds_result.get(
+                    "ok"
+                )
+                else []
+            )
+
+            odds_debug_rows = []
+            odds_keys = {}
+
+            for event in odds_events:
+                home = str(
+                    event.get(
+                        "home_team",
+                        ""
+                    )
+                    or ""
+                ).strip()
+
+                away = str(
+                    event.get(
+                        "away_team",
+                        ""
+                    )
+                    or ""
+                ).strip()
+
+                home_norm = normalizar_nombre(
+                    home
+                )
+
+                away_norm = normalizar_nombre(
+                    away
+                )
+
+                if home_norm and away_norm:
+                    key = tuple(
+                        sorted(
+                            (
+                                home_norm,
+                                away_norm
+                            )
+                        )
+                    )
+
+                    odds_keys[
+                        key
+                    ] = event
+
+                odds_debug_rows.append(
+                    {
+                        "Odds API": (
+                            f"{home} vs {away}"
+                        ),
+                        "Competición": event.get(
+                            "sport_key",
+                            "-"
+                        ),
+                        "Inicio": event.get(
+                            "commence_time",
+                            "-"
+                        ),
+                        "Casas brutas": len(
+                            event.get(
+                                "bookmakers",
+                                []
+                            )
+                        ),
+                    }
+                )
+
+            cross_rows = []
+
+            for _, row in diag_today.iterrows():
+                live_a = str(
+                    row.get(
+                        "_player1_full",
+                        row.get(
+                            "Jugador 1",
+                            ""
+                        )
+                    )
+                    or ""
+                ).strip()
+
+                live_b = str(
+                    row.get(
+                        "_player2_full",
+                        row.get(
+                            "Jugador 2",
+                            ""
+                        )
+                    )
+                    or ""
+                ).strip()
+
+                a_norm = normalizar_nombre(
+                    live_a
+                )
+
+                b_norm = normalizar_nombre(
+                    live_b
+                )
+
+                live_key = tuple(
+                    sorted(
+                        (
+                            a_norm,
+                            b_norm
+                        )
+                    )
+                )
+
+                exact = (
+                    live_key
+                    in
+                    odds_keys
+                )
+
+                nearest_name = "-"
+                nearest_score = 0.0
+
+                live_text = " | ".join(
+                    live_key
+                )
+
+                for event in odds_events:
+                    oh = normalizar_nombre(
+                        event.get(
+                            "home_team",
+                            ""
+                        )
+                    )
+
+                    oa = normalizar_nombre(
+                        event.get(
+                            "away_team",
+                            ""
+                        )
+                    )
+
+                    if not oh or not oa:
+                        continue
+
+                    odds_key = tuple(
+                        sorted(
+                            (
+                                oh,
+                                oa
+                            )
+                        )
+                    )
+
+                    odds_text = " | ".join(
+                        odds_key
+                    )
+
+                    score = SequenceMatcher(
+                        None,
+                        live_text,
+                        odds_text
+                    ).ratio()
+
+                    if score > nearest_score:
+                        nearest_score = score
+
+                        nearest_name = (
+                            f"{event.get('home_team','')} "
+                            f"vs {event.get('away_team','')}"
+                        )
+
+                cross_rows.append(
+                    {
+                        "Partido resuelto": (
+                            f"{live_a} vs {live_b}"
+                        ),
+                        "Match exacto": (
+                            "✅"
+                            if exact
+                            else "❌"
+                        ),
+                        "Odds más parecida": (
+                            nearest_name
+                        ),
+                        "Similitud": (
+                            f"{nearest_score:.0%}"
+                        ),
+                    }
+                )
+
+            if cross_rows:
+                st.dataframe(
+                    pd.DataFrame(
+                        cross_rows
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+
+            st.markdown(
+                "#### 💰 Eventos que realmente devuelve The Odds API"
+            )
+
+            if odds_debug_rows:
+                st.dataframe(
+                    pd.DataFrame(
+                        odds_debug_rows
+                    ),
+                    hide_index=True,
+                    use_container_width=True,
+                )
+            else:
+                st.info(
+                    "The Odds API no ha devuelto eventos."
                 )
 
     except Exception as exc:
