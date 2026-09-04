@@ -1,4 +1,4 @@
-# BUILD: V13.5.8 · PREMATCH CONSENSUS FIX + TOP PICKS QUALITY
+# BUILD: V13.5.9 · STALE STATUS FIX + TOP PICKS QUALITY
 import os
 import html
 import textwrap
@@ -1920,14 +1920,19 @@ def _partido_ya_empezo(
     datos_cuotas=None
 ):
     """
-    V13.5.8 · DECISIÓN PRE-MATCH ROBUSTA
+    V13.5.9 · CONSENSO DE INICIO
 
-    1) Un status explícitamente LIVE/FINISHED siempre manda.
-    2) Si The Odds API trae un mercado actual cuyo commence_time
-       todavía está en el futuro, el partido se considera PRE-MATCH.
-       Esto corrige fixtures de Live Tennis con fecha/hora stale.
-    3) Si no, usamos start_time del fixture.
-    4) Si sólo existe commence_time, usamos ese.
+    Problema corregido:
+    algunos fixtures llegan con un status antiguo/incorrecto aunque
+    tanto Live Tennis start_time como The Odds API commence_time
+    indiquen claramente un partido FUTURO.
+
+    Regla:
+    - Si AMBAS horas fiables están en el futuro -> PRE-MATCH,
+      incluso si el status del fixture viene stale.
+    - Si las fuentes horarias discrepan -> criterio conservador:
+      consideramos iniciado al alcanzar la hora más temprana.
+    - Si sólo hay una hora -> usamos esa.
     """
     status = str(
         partido.get(
@@ -1936,27 +1941,6 @@ def _partido_ya_empezo(
         )
         or ""
     ).strip().lower()
-
-    closed_statuses = {
-        "live",
-        "in_progress",
-        "in progress",
-        "started",
-        "playing",
-        "completed",
-        "finished",
-        "ended",
-        "retired",
-        "walkover",
-        "wo",
-        "default",
-        "cancelled",
-        "canceled",
-        "abandoned",
-    }
-
-    if status in closed_statuses:
-        return True
 
     ahora = pd.Timestamp.now(
         tz="UTC"
@@ -1977,28 +1961,71 @@ def _partido_ya_empezo(
             )
         )
 
-    # Si el mercado que acabamos de recibir tiene una hora futura,
-    # no lo tratamos como LIVE aunque el fixture venga desfasado.
+    # CASO CLAVE:
+    # las dos fuentes independientes dicen FUTURO.
+    # Un status "finished/live" aquí se considera stale.
     if (
-        datos_cuotas
+        fixture_start is not None
         and odds_start is not None
+        and ahora < fixture_start
         and ahora < odds_start
     ):
         return False
 
+    closed_statuses = {
+        "live",
+        "in_progress",
+        "in progress",
+        "started",
+        "playing",
+        "completed",
+        "finished",
+        "ended",
+        "retired",
+        "walkover",
+        "wo",
+        "default",
+        "cancelled",
+        "canceled",
+        "abandoned",
+    }
+
+    # Fuera del consenso-futuro, un estado explícito cerrado manda.
+    if status in closed_statuses:
+        return True
+
+    # Si tenemos ambas horas pero discrepan, usamos la más temprana
+    # para impedir que una cuota in-play se cuele como pre-match.
+    if (
+        fixture_start is not None
+        and odds_start is not None
+    ):
+        return bool(
+            ahora
+            >=
+            min(
+                fixture_start,
+                odds_start
+            )
+        )
+
     if fixture_start is not None:
         return bool(
-            ahora >= fixture_start
+            ahora
+            >=
+            fixture_start
         )
 
     if odds_start is not None:
         return bool(
-            ahora >= odds_start
+            ahora
+            >=
+            odds_start
         )
 
-    # Sin una hora fiable y sin status de live/finalizado,
-    # no bloqueamos un mercado actual como si fuese in-play.
+    # Sin status cerrado ni hora fiable, no afirmamos que haya empezado.
     return False
+
 
 def _load_prematch_snapshot(
     match_key
@@ -3594,11 +3621,46 @@ def render_top_picks_page(df, ventana, usar_elo, data_version):
                     )
                 )
 
+                fixture_row = None
+                for fixture_candidate in load_upcoming_matches():
+                    fa = str(fixture_candidate.get("player1", "") or "").strip()
+                    fb = str(fixture_candidate.get("player2", "") or "").strip()
+                    resolved_pair = tuple(sorted((
+                        normalizar_nombre(fa),
+                        normalizar_nombre(fb),
+                    )))
+                    if resolved_pair == key:
+                        fixture_row = fixture_candidate
+                        break
+
+                fixture_status_debug = (
+                    str(fixture_row.get("status", ""))
+                    if fixture_row
+                    else "-"
+                )
+                fixture_start_debug = (
+                    str(fixture_row.get("start_time", ""))
+                    if fixture_row
+                    else "-"
+                )
+
+                odds_start_debug = "-"
+                if lookup:
+                    odds_start_debug = str(
+                        lookup.get(
+                            "commence_time",
+                            "-"
+                        )
+                    )
+
                 pipeline_rows.append(
                     {
                         "Partido": (
                             f"{live_a} vs {live_b}"
                         ),
+                        "Status fixture": fixture_status_debug,
+                        "Hora fixture": fixture_start_debug,
+                        "Hora Odds": odds_start_debug,
                         "RAW exacto": "✅",
                         "En índice": (
                             "✅"
