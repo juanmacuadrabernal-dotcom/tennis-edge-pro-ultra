@@ -1,5 +1,5 @@
 """
-Tennis Edge Pro · Odds Engine V5 Dynamic Multi-Provider
+Tennis Edge Pro · Odds Engine V6 Direct Multi-Provider
 
 Proveedor principal:
 - The Odds API
@@ -35,12 +35,11 @@ from player_resolver import normalizar_nombre
 PRIMARY_BASE_URL = "https://api.the-odds-api.com/v4"
 ODDSPAPI_BASE_URL = "https://api.oddspapi.io/v4"
 
-# OddsPapi IDs are discovered dynamically at runtime because their
-# public docs/blog examples have used different IDs over time.
-TENNIS_SPORT_ID = None
-TENNIS_WINNER_MARKET_ID = None
-TENNIS_P1_OUTCOME_ID = None
-TENNIS_P2_OUTCOME_ID = None
+# OddsPapi Tennis IDs verified against current 2026 docs/examples.
+TENNIS_SPORT_ID = 12
+TENNIS_WINNER_MARKET_ID = "121"
+TENNIS_P1_OUTCOME_ID = "121"
+TENNIS_P2_OUTCOME_ID = "122"
 
 MIN_ODDS = 1.01
 MAX_ODDS = 100.0
@@ -318,12 +317,6 @@ def _oddspapi_params(extra=None):
 
 
 def _oddspapi_list_payload(payload):
-    """
-    Normaliza respuestas que pueden venir como:
-    - lista
-    - objeto único con fixtureId
-    - objeto envolviendo data/events/fixtures
-    """
     if isinstance(payload, list):
         return payload
 
@@ -339,248 +332,143 @@ def _oddspapi_list_payload(payload):
             "results",
         ):
             value = payload.get(key)
+
             if isinstance(value, list):
                 return value
 
-            if isinstance(value, dict) and value.get("fixtureId"):
+            if (
+                isinstance(value, dict)
+                and value.get("fixtureId")
+            ):
                 return [value]
 
     return []
 
 
-def _discover_oddspapi_tennis():
+def _oddspapi_get(path, params=None, timeout=25):
     """
-    Descubre sportId y el mercado Match Winner desde /sports y /markets.
-    Evita depender de IDs hardcodeados que pueden variar entre versiones.
+    Request helper that preserves the useful API error body.
+    This avoids another blind '400 Client Error'.
     """
-    if not ODDSPAPI_API_KEY:
-        return {
-            "ok": False,
-            "message": "ODDSPAPI_API_KEY no configurada.",
-        }
-
-    try:
-        sports_response = requests.get(
-            f"{ODDSPAPI_BASE_URL}/sports",
-            params=_oddspapi_params(),
-            timeout=20,
-        )
-        sports_response.raise_for_status()
-
-        sports = _oddspapi_list_payload(
-            sports_response.json()
-        )
-
-        tennis_sport = None
-
-        for sport in sports:
-            if not isinstance(sport, dict):
-                continue
-
-            slug = str(
-                sport.get("slug", "")
-                or ""
-            ).strip().lower()
-
-            name = str(
-                sport.get("sportName", "")
-                or ""
-            ).strip().lower()
-
-            if slug == "tennis" or name == "tennis":
-                tennis_sport = sport
-                break
-
-        if not tennis_sport:
-            return {
-                "ok": False,
-                "message": "OddsPapi no devolvió el deporte Tennis.",
-            }
-
-        sport_id = tennis_sport.get(
-            "sportId"
-        )
-
-        markets_response = requests.get(
-            f"{ODDSPAPI_BASE_URL}/markets",
-            params=_oddspapi_params(),
-            timeout=20,
-        )
-        markets_response.raise_for_status()
-
-        markets = _oddspapi_list_payload(
-            markets_response.json()
-        )
-
-        candidates = []
-
-        for market in markets:
-            if not isinstance(market, dict):
-                continue
-
-            if str(
-                market.get("sportId")
-            ) != str(sport_id):
-                continue
-
-            market_name = str(
-                market.get("marketName", "")
-                or ""
-            ).strip().lower()
-
-            market_type = str(
-                market.get("marketType", "")
-                or ""
-            ).strip().lower()
-
-            period = str(
-                market.get("period", "")
-                or ""
-            ).strip().lower()
-
-            outcomes = market.get(
-                "outcomes",
-                []
-            )
-
-            if not isinstance(outcomes, list) or len(outcomes) != 2:
-                continue
-
-            score = 0
-
-            if market_name == "match winner":
-                score += 100
-            elif "match winner" in market_name:
-                score += 90
-            elif "winner" in market_name:
-                score += 60
-
-            if market_type in (
-                "moneyline",
-                "ml",
-                "winner",
-            ):
-                score += 30
-
-            if period in (
-                "fulltime",
-                "full time",
-                "match",
-                "",
-            ):
-                score += 10
-
-            # Outcome labels 1/2 are ideal for participant1/participant2.
-            outcome_names = [
-                str(
-                    o.get("outcomeName", "")
-                    or ""
-                ).strip().lower()
-                for o in outcomes
-                if isinstance(o, dict)
-            ]
-
-            if set(outcome_names) == {"1", "2"}:
-                score += 25
-
-            if score > 0:
-                candidates.append(
-                    (
-                        score,
-                        market,
-                    )
-                )
-
-        if not candidates:
-            return {
-                "ok": False,
-                "sport_id": sport_id,
-                "message": (
-                    "OddsPapi no devolvió un mercado Match Winner "
-                    "inequívoco para Tennis."
-                ),
-            }
-
-        candidates.sort(
-            key=lambda x: x[0],
-            reverse=True,
-        )
-
-        winner_market = candidates[0][1]
-        outcomes = winner_market.get(
-            "outcomes",
-            [],
-        )
-
-        p1_outcome = None
-        p2_outcome = None
-
-        # Preferimos etiquetas explícitas 1 y 2.
-        for outcome in outcomes:
-            if not isinstance(outcome, dict):
-                continue
-
-            name = str(
-                outcome.get("outcomeName", "")
-                or ""
-            ).strip().lower()
-
-            if name in ("1", "home", "participant 1", "player 1"):
-                p1_outcome = outcome.get(
-                    "outcomeId"
-                )
-
-            elif name in ("2", "away", "participant 2", "player 2"):
-                p2_outcome = outcome.get(
-                    "outcomeId"
-                )
-
-        # Fallback conservador: el orden del catálogo.
-        if p1_outcome is None and len(outcomes) >= 1:
-            p1_outcome = outcomes[0].get(
-                "outcomeId"
-            )
-
-        if p2_outcome is None and len(outcomes) >= 2:
-            p2_outcome = outcomes[1].get(
-                "outcomeId"
-            )
-
-        return {
-            "ok": True,
-            "sport_id": sport_id,
-            "market_id": str(
-                winner_market.get("marketId")
-            ),
-            "p1_outcome_id": str(
-                p1_outcome
-            ),
-            "p2_outcome_id": str(
-                p2_outcome
-            ),
-            "market_name": winner_market.get(
-                "marketName",
-                "Match Winner",
-            ),
-        }
-
-    except Exception as exc:
-        return {
-            "ok": False,
-            "message": str(exc),
-        }
-
-
-def _oddspapi_params(extra=None):
-    params = {
+    merged = {
         "apiKey": ODDSPAPI_API_KEY,
-        "language": "en",
     }
 
-    if extra:
-        params.update(extra)
+    if params:
+        merged.update(params)
 
-    return params
+    response = requests.get(
+        f"{ODDSPAPI_BASE_URL}/{path}",
+        params=merged,
+        timeout=timeout,
+    )
+
+    if response.status_code != 200:
+        body = str(
+            response.text
+            or ""
+        ).strip()
+
+        if len(body) > 500:
+            body = body[:500] + "..."
+
+        raise RuntimeError(
+            f"OddsPapi {path}: HTTP {response.status_code}"
+            + (
+                f" · {body}"
+                if body
+                else ""
+            )
+        )
+
+    try:
+        return response.json()
+    except Exception as exc:
+        raise RuntimeError(
+            f"OddsPapi {path}: JSON inválido"
+        ) from exc
+
+
+def _oddspapi_account():
+    """
+    /account no consume cuota según OddsPapi.
+    Lo usamos como preflight para validar la key y comprobar
+    que Tennis (sportId 12) está disponible en la suscripción.
+    """
+    payload = _oddspapi_get(
+        "account",
+        timeout=20,
+    )
+
+    subscriptions = (
+        payload.get("subscriptions", [])
+        if isinstance(payload, dict)
+        else []
+    )
+
+    active = None
+
+    for sub in subscriptions:
+        if (
+            isinstance(sub, dict)
+            and sub.get("is_active")
+        ):
+            active = sub
+            break
+
+    if active is None and subscriptions:
+        active = subscriptions[0]
+
+    active = (
+        active
+        if isinstance(active, dict)
+        else {}
+    )
+
+    sport_ids = active.get(
+        "sport_ids",
+        []
+    ) or []
+
+    sport_ids = {
+        str(value)
+        for value in sport_ids
+    }
+
+    if (
+        sport_ids
+        and str(TENNIS_SPORT_ID)
+        not in sport_ids
+    ):
+        raise RuntimeError(
+            "OddsPapi account: tu suscripción no incluye "
+            "Tennis (sportId 12)."
+        )
+
+    bookmaker_map = active.get(
+        "bookmakers",
+        {}
+    )
+
+    bookmaker_slugs = []
+
+    if isinstance(bookmaker_map, dict):
+        bookmaker_slugs = [
+            str(slug).strip()
+            for slug in bookmaker_map.keys()
+            if str(slug).strip()
+        ]
+
+    return {
+        "request_limit": active.get(
+            "request_limit"
+        ),
+        "request_count": active.get(
+            "request_count"
+        ),
+        "bookmakers": bookmaker_slugs,
+        "sport_ids": sorted(sport_ids),
+    }
 
 
 def _extract_current_player_price(player_block):
@@ -726,12 +614,15 @@ def _parse_oddspapi_bookmakers(
 
 def _get_oddspapi_odds():
     """
-    OddsPapi dinámico:
-    1) descubre sportId + Match Winner
-    2) fixtures pre-match con odds
-    3) odds-by-tournaments
+    V6 · Integración directa y mínima.
 
-    No hardcodea IDs de tenis/mercado.
+    Flujo:
+    0) /account (NO consume cuota): valida key/suscripción.
+    1) /fixtures: Tennis sportId=12, PRE-GAME, con odds.
+    2) /odds-by-tournaments: una llamada para todos los torneos.
+
+    Eliminamos /sports y /markets del flujo normal: eran llamadas
+    innecesarias y añadían puntos de fallo + consumo de cuota.
     """
     if not ODDSPAPI_API_KEY:
         return {
@@ -740,89 +631,93 @@ def _get_oddspapi_odds():
             "message": "ODDSPAPI_API_KEY no configurada.",
             "fixtures": 0,
             "tournaments": 0,
-            "discovery": {},
+            "account": {},
         }
 
     try:
-        discovery = _discover_oddspapi_tennis()
+        account = _oddspapi_account()
 
-        if not discovery.get("ok"):
-            return {
-                "ok": False,
-                "events": [],
-                "message": discovery.get(
-                    "message",
-                    "No se pudo descubrir Tennis/Match Winner.",
-                ),
-                "fixtures": 0,
-                "tournaments": 0,
-                "discovery": discovery,
-            }
-
-        sport_id = discovery["sport_id"]
-        market_id = discovery["market_id"]
-        p1_outcome_id = discovery["p1_outcome_id"]
-        p2_outcome_id = discovery["p2_outcome_id"]
-
-        now = datetime.now(timezone.utc)
-
-        # Ventana total 42h (<48h).
-        date_from = (
-            now - timedelta(hours=2)
-        ).isoformat().replace("+00:00", "Z")
-
-        date_to = (
-            now + timedelta(hours=40)
-        ).isoformat().replace("+00:00", "Z")
-
-        fixture_response = requests.get(
-            f"{ODDSPAPI_BASE_URL}/fixtures",
-            params=_oddspapi_params(
-                {
-                    "sportId": sport_id,
-                    "from": date_from,
-                    "to": date_to,
-                    "statusId": 0,
-                    "hasOdds": "true",
-                }
-            ),
-            timeout=25,
+        now = datetime.now(
+            timezone.utc
         )
-        fixture_response.raise_for_status()
 
-        fixtures = fixture_response.json()
+        # Usamos fechas simples ISO, exactamente en el formato mostrado
+        # por la documentación de /fixtures.
+        date_from = now.strftime(
+            "%Y-%m-%d"
+        )
+        date_to = (
+            now + timedelta(days=2)
+        ).strftime(
+            "%Y-%m-%d"
+        )
 
-        if not isinstance(fixtures, list):
-            fixtures = []
+        fixture_params = {
+            "sportId": TENNIS_SPORT_ID,
+            "from": date_from,
+            "to": date_to,
+            "statusId": 0,
+            "hasOdds": "true",
+            "language": "en",
+        }
 
-        # Nos quedamos con fixtures que aún puedan ser pre-match.
+        # Si el usuario ha configurado casas explícitamente, sólo las
+        # usamos para evaluar hasOdds.
+        books_secret = str(
+            ODDSPAPI_BOOKMAKERS
+            or ""
+        ).strip()
+
+        if books_secret:
+            fixture_params[
+                "bookmakers"
+            ] = books_secret
+
+        fixtures_payload = _oddspapi_get(
+            "fixtures",
+            params=fixture_params,
+            timeout=30,
+        )
+
+        fixtures = _oddspapi_list_payload(
+            fixtures_payload
+        )
+
         fixture_map = {}
 
         for fixture in fixtures:
-            if not isinstance(fixture, dict):
+            if not isinstance(
+                fixture,
+                dict
+            ):
                 continue
 
             fixture_id = str(
-                fixture.get("fixtureId", "")
+                fixture.get(
+                    "fixtureId",
+                    ""
+                )
                 or ""
             ).strip()
 
             p1 = str(
-                fixture.get("participant1Name", "")
+                fixture.get(
+                    "participant1Name",
+                    ""
+                )
                 or ""
             ).strip()
 
             p2 = str(
-                fixture.get("participant2Name", "")
+                fixture.get(
+                    "participant2Name",
+                    ""
+                )
                 or ""
             ).strip()
 
             tournament_id = fixture.get(
                 "tournamentId"
-            )
-
-            start_time = fixture.get(
-                "startTime"
             )
 
             if (
@@ -833,7 +728,9 @@ def _get_oddspapi_odds():
             ):
                 continue
 
-            fixture_map[fixture_id] = {
+            fixture_map[
+                fixture_id
+            ] = {
                 "participant1Name": p1,
                 "participant2Name": p2,
                 "tournamentId": tournament_id,
@@ -841,15 +738,18 @@ def _get_oddspapi_odds():
                     "tournamentName",
                     "",
                 ),
-                "startTime": start_time,
-                "statusId": fixture.get(
-                    "statusId"
+                "startTime": fixture.get(
+                    "startTime"
                 ),
             }
 
         tournament_ids = sorted(
             {
-                str(item["tournamentId"])
+                str(
+                    item[
+                        "tournamentId"
+                    ]
+                )
                 for item in fixture_map.values()
             }
         )
@@ -859,8 +759,11 @@ def _get_oddspapi_odds():
                 "ok": True,
                 "events": [],
                 "message": "",
-                "fixtures": len(fixture_map),
+                "fixtures": len(
+                    fixture_map
+                ),
                 "tournaments": 0,
+                "account": account,
             }
 
         odds_params = {
@@ -872,31 +775,28 @@ def _get_oddspapi_odds():
             "oddsFormat": "decimal",
         }
 
-        books = str(
-            ODDSPAPI_BOOKMAKERS
-            or ""
-        ).strip()
+        if books_secret:
+            odds_params[
+                "bookmakers"
+            ] = books_secret
 
-        if books:
-            odds_params["bookmakers"] = books
-
-        odds_response = requests.get(
-            f"{ODDSPAPI_BASE_URL}/odds-by-tournaments",
-            params=_oddspapi_params(
-                odds_params
-            ),
-            timeout=35,
+        odds_payload = _oddspapi_get(
+            "odds-by-tournaments",
+            params=odds_params,
+            timeout=40,
         )
-        odds_response.raise_for_status()
 
-        odds_payload = _oddspapi_list_payload(
-            odds_response.json()
+        odds_rows = _oddspapi_list_payload(
+            odds_payload
         )
 
         normalized = []
 
-        for odds_event in odds_payload:
-            if not isinstance(odds_event, dict):
+        for odds_event in odds_rows:
+            if not isinstance(
+                odds_event,
+                dict
+            ):
                 continue
 
             fixture_id = str(
@@ -911,7 +811,6 @@ def _get_oddspapi_odds():
                 fixture_id
             )
 
-            # Sólo incorporamos los fixtures de nuestra ventana.
             if not fixture:
                 continue
 
@@ -927,9 +826,9 @@ def _get_oddspapi_odds():
                     odds_event,
                     p1,
                     p2,
-                    market_id,
-                    p1_outcome_id,
-                    p2_outcome_id,
+                    TENNIS_WINNER_MARKET_ID,
+                    TENNIS_P1_OUTCOME_ID,
+                    TENNIS_P2_OUTCOME_ID,
                 )
             )
 
@@ -938,12 +837,18 @@ def _get_oddspapi_odds():
 
             normalized.append(
                 {
-                    "id": f"oddspapi-{fixture_id}",
+                    "id": (
+                        f"oddspapi-{fixture_id}"
+                    ),
                     "home_team": p1,
                     "away_team": p2,
                     "commence_time": (
-                        odds_event.get("startTime")
-                        or fixture.get("startTime")
+                        odds_event.get(
+                            "startTime"
+                        )
+                        or fixture.get(
+                            "startTime"
+                        )
                     ),
                     "sport_key": (
                         "tennis_oddspapi_"
@@ -952,9 +857,14 @@ def _get_oddspapi_odds():
                                 "tournamentName",
                                 "tennis",
                             )
-                        ).replace(" ", "_")
+                        ).replace(
+                            " ",
+                            "_"
+                        )
                     ),
-                    "odds_provider": "oddspapi",
+                    "odds_provider": (
+                        "oddspapi"
+                    ),
                     "bookmakers": bookmakers,
                 }
             )
@@ -963,9 +873,13 @@ def _get_oddspapi_odds():
             "ok": True,
             "events": normalized,
             "message": "",
-            "fixtures": len(fixture_map),
-            "tournaments": len(tournament_ids),
-            "discovery": discovery,
+            "fixtures": len(
+                fixture_map
+            ),
+            "tournaments": len(
+                tournament_ids
+            ),
+            "account": account,
         }
 
     except Exception as exc:
@@ -975,7 +889,7 @@ def _get_oddspapi_odds():
             "message": str(exc),
             "fixtures": 0,
             "tournaments": 0,
-            "discovery": {},
+            "account": {},
         }
 
 
@@ -1153,8 +1067,8 @@ def get_tennis_odds():
                     "message",
                     "",
                 ),
-                "discovery": secondary.get(
-                    "discovery",
+                "account": secondary.get(
+                    "account",
                     {},
                 ),
             },
