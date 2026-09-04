@@ -1,4 +1,4 @@
-# BUILD: V13.5.6 · MOBILE SAFE + TOP PICKS QUALITY + ODDS PIPELINE DEBUG
+# BUILD: V13.5.7 · PREMATCH START FIX + TOP PICKS QUALITY
 import os
 import html
 import textwrap
@@ -1880,14 +1880,19 @@ def _inicio_mercado(
     datos_cuotas=None
 ):
     """
-    Devuelve el comienzo más conservador disponible.
+    V13.5.7 · HORA DE INICIO FIABLE
 
-    Si Live Tennis y The Odds API difieren, usamos la hora
-    más temprana. Esto evita que una cuota in-play pueda
-    colarse como pre-match.
+    Fuente principal: Live Tennis fixture.start_time.
+
+    Motivo:
+    The Odds API puede devolver commence_time desfasado/antiguo
+    para un mercado que sigue abierto. Antes usábamos min()
+    entre ambas horas y eso hacía que un partido FUTURO se
+    clasificara erróneamente como ya empezado.
+
+    Sólo usamos commence_time de Odds API si el fixture no trae
+    una hora válida.
     """
-    candidates = []
-
     fixture_start = _utc_timestamp(
         partido.get(
             "start_time"
@@ -1895,9 +1900,7 @@ def _inicio_mercado(
     )
 
     if fixture_start is not None:
-        candidates.append(
-            fixture_start
-        )
+        return fixture_start
 
     if datos_cuotas:
         odds_start = _utc_timestamp(
@@ -1907,16 +1910,9 @@ def _inicio_mercado(
         )
 
         if odds_start is not None:
-            candidates.append(
-                odds_start
-            )
+            return odds_start
 
-    if not candidates:
-        return None
-
-    return min(
-        candidates
-    )
+    return None
 
 
 def _partido_ya_empezo(
