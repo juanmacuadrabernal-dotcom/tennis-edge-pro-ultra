@@ -1,4 +1,4 @@
-# BUILD: V13.5.7 · PREMATCH START FIX + TOP PICKS QUALITY
+# BUILD: V13.5.8 · PREMATCH CONSENSUS FIX + TOP PICKS QUALITY
 import os
 import html
 import textwrap
@@ -1920,8 +1920,14 @@ def _partido_ya_empezo(
     datos_cuotas=None
 ):
     """
-    Nunca depende de una cuota para decidir si el partido
-    está en juego. Usa status + hora prevista.
+    V13.5.8 · DECISIÓN PRE-MATCH ROBUSTA
+
+    1) Un status explícitamente LIVE/FINISHED siempre manda.
+    2) Si The Odds API trae un mercado actual cuyo commence_time
+       todavía está en el futuro, el partido se considera PRE-MATCH.
+       Esto corrige fixtures de Live Tennis con fecha/hora stale.
+    3) Si no, usamos start_time del fixture.
+    4) Si sólo existe commence_time, usamos ese.
     """
     status = str(
         partido.get(
@@ -1939,6 +1945,7 @@ def _partido_ya_empezo(
         "playing",
         "completed",
         "finished",
+        "ended",
         "retired",
         "walkover",
         "wo",
@@ -1951,26 +1958,47 @@ def _partido_ya_empezo(
     if status in closed_statuses:
         return True
 
-    inicio = _inicio_mercado(
-        partido,
-        datos_cuotas
-    )
-
-    if inicio is None:
-        # Sin hora fiable no afirmamos que haya empezado.
-        # El fixture normal de nuestra API sí trae start_time.
-        return False
-
     ahora = pd.Timestamp.now(
         tz="UTC"
     )
 
-    return bool(
-        ahora
-        >=
-        inicio
+    fixture_start = _utc_timestamp(
+        partido.get(
+            "start_time"
+        )
     )
 
+    odds_start = None
+
+    if datos_cuotas:
+        odds_start = _utc_timestamp(
+            datos_cuotas.get(
+                "commence_time"
+            )
+        )
+
+    # Si el mercado que acabamos de recibir tiene una hora futura,
+    # no lo tratamos como LIVE aunque el fixture venga desfasado.
+    if (
+        datos_cuotas
+        and odds_start is not None
+        and ahora < odds_start
+    ):
+        return False
+
+    if fixture_start is not None:
+        return bool(
+            ahora >= fixture_start
+        )
+
+    if odds_start is not None:
+        return bool(
+            ahora >= odds_start
+        )
+
+    # Sin una hora fiable y sin status de live/finalizado,
+    # no bloqueamos un mercado actual como si fuese in-play.
+    return False
 
 def _load_prematch_snapshot(
     match_key
