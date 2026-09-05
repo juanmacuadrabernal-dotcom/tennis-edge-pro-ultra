@@ -1,4 +1,5 @@
 import statistics
+from difflib import SequenceMatcher
 
 import requests
 
@@ -622,6 +623,99 @@ def construir_indice_cuotas(events):
     return indice
 
 
+
+def _name_tokens(value):
+    norm = normalizar_nombre(value)
+    return [t for t in str(norm or "").split() if t]
+
+
+def _player_match_score(query_name, event_name):
+    """
+    Matching conservador para resolver variantes como:
+      - Alexander Bublik vs A. Bublik
+      - Alex de Minaur vs A De Minaur
+    No acepta coincidencias débiles.
+    """
+    q = normalizar_nombre(query_name)
+    e = normalizar_nombre(event_name)
+
+    if not q or not e:
+        return 0.0
+
+    if q == e:
+        return 1.0
+
+    qt = _name_tokens(q)
+    et = _name_tokens(e)
+
+    if not qt or not et:
+        return 0.0
+
+    q_last = qt[-1]
+    e_last = et[-1]
+
+    # Apellidos iguales = señal muy fuerte.
+    if q_last == e_last:
+        q_first = qt[0]
+        e_first = et[0]
+
+        if q_first and e_first and q_first[0] == e_first[0]:
+            return 0.98
+
+        # Si uno viene abreviado o sólo tenemos apellido, seguimos
+        # considerándolo una coincidencia fuerte.
+        if len(qt) == 1 or len(et) == 1 or len(q_first) == 1 or len(e_first) == 1:
+            return 0.94
+
+        return max(
+            0.90,
+            SequenceMatcher(None, q, e).ratio()
+        )
+
+    # Sin apellido exacto exigimos similitud casi total.
+    return SequenceMatcher(None, q, e).ratio()
+
+
+def _find_fuzzy_event(indice, jugador_a, jugador_b):
+    """
+    Busca un partido cuando la clave exacta no existe.
+    Sólo acepta emparejamientos con alta confianza en AMBOS jugadores.
+    """
+    best = None
+    best_score = 0.0
+
+    for event in indice.values():
+        home = event.get("home_team")
+        away = event.get("away_team")
+
+        direct_a = _player_match_score(jugador_a, home)
+        direct_b = _player_match_score(jugador_b, away)
+        swap_a = _player_match_score(jugador_a, away)
+        swap_b = _player_match_score(jugador_b, home)
+
+        direct_min = min(direct_a, direct_b)
+        swap_min = min(swap_a, swap_b)
+
+        if direct_min >= swap_min:
+            score = (direct_a + direct_b) / 2.0
+            min_score = direct_min
+            swapped = False
+        else:
+            score = (swap_a + swap_b) / 2.0
+            min_score = swap_min
+            swapped = True
+
+        # Muy conservador para no cruzar partidos distintos.
+        if min_score < 0.88 or score < 0.91:
+            continue
+
+        if score > best_score:
+            best_score = score
+            best = (event, swapped, score)
+
+    return best
+
+
 def buscar_mejores_cuotas(
     indice,
     jugador_a,
@@ -639,8 +733,23 @@ def buscar_mejores_cuotas(
         clave
     )
 
+    swapped = False
+    match_method = "exact"
+
+    # V2.1: fallback conservador si Live Tennis y Odds API
+    # escriben el mismo jugador de forma distinta.
     if not event:
-        return None
+        fuzzy = _find_fuzzy_event(
+            indice,
+            jugador_a,
+            jugador_b
+        )
+
+        if fuzzy:
+            event, swapped, fuzzy_score = fuzzy
+            match_method = f"fuzzy:{fuzzy_score:.3f}"
+        else:
+            return None
 
     # Si solo existe una casa o el mercado no pasó
     # los filtros de calidad, no calculamos VALUE.
@@ -650,33 +759,38 @@ def buscar_mejores_cuotas(
     ):
         return None
 
-    nombre_a = normalizar_nombre(
-        jugador_a
+    home_norm = normalizar_nombre(
+        event.get("home_team")
+    )
+    away_norm = normalizar_nombre(
+        event.get("away_team")
     )
 
-    nombre_b = normalizar_nombre(
-        jugador_b
+    cuotas = event.get(
+        "cuotas",
+        {}
     )
-
-    cuota_a = event[
-        "cuotas"
-    ].get(
-        nombre_a
-    )
-
-    cuota_b = event[
-        "cuotas"
-    ].get(
-        nombre_b
-    )
-
-    if not cuota_a or not cuota_b:
-        return None
 
     consensus = event.get(
         "consensus",
         {}
     )
+
+    # Alineamos las cuotas con jugador_a / jugador_b según
+    # la orientación exacta o fuzzy detectada.
+    if not swapped:
+        cuota_a = cuotas.get(home_norm)
+        cuota_b = cuotas.get(away_norm)
+        cons_a = consensus.get(home_norm)
+        cons_b = consensus.get(away_norm)
+    else:
+        cuota_a = cuotas.get(away_norm)
+        cuota_b = cuotas.get(home_norm)
+        cons_a = consensus.get(away_norm)
+        cons_b = consensus.get(home_norm)
+
+    if not cuota_a or not cuota_b:
+        return None
 
     return {
         "jugador_a": jugador_a,
@@ -704,8 +818,6 @@ def buscar_mejores_cuotas(
             "sport_key"
         ),
 
-        # Metadatos nuevos. La app antigua puede
-        # ignorarlos sin romperse.
         "calidad_mercado": event.get(
             "market_quality",
             "N/D"
@@ -726,15 +838,9 @@ def buscar_mejores_cuotas(
             0
         ),
 
-        "prob_consenso_a": (
-            consensus.get(
-                nombre_a
-            )
-        ),
+        "prob_consenso_a": cons_a,
+        "prob_consenso_b": cons_b,
 
-        "prob_consenso_b": (
-            consensus.get(
-                nombre_b
-            )
-        ),
+        # Diagnóstico no intrusivo.
+        "match_method": match_method,
     }
