@@ -429,7 +429,6 @@ def aplicar_estilo_premium():
         }
 
         @media(max-width:1000px){.tep-kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr));}.tep-header{flex-direction:column;}.tep-status-wrap{justify-content:flex-start;}}
-        
         /* =========================================================
            V14.2 · LOOK REAL DEL DISEÑO APROBADO
            ========================================================= */
@@ -527,6 +526,7 @@ def aplicar_estilo_premium():
             .block-container {padding-left:.8rem;padding-right:.8rem;padding-top:1rem;}
         }
 
+        
         </style>
         """,
         unsafe_allow_html=True
@@ -1079,6 +1079,1676 @@ def render_dashboard_premium_v13(
             st.write("✅ Analizador individual: sin cambios")
             if payload:
                 st.write(f"✅ Último Radar: {payload.get('scanned_at', '-')}")
+
+
+
+
+def render_performance_preview(track):
+    picks = track.get("picks", pd.DataFrame())
+    if picks.empty or "status" not in picks.columns:
+        return
+    settled = picks[picks["status"].isin(["WON","LOST"])].copy()
+    if settled.empty:
+        return
+    if "id" in settled.columns:
+        settled = settled.sort_values("id")
+    settled["profit_num"] = pd.to_numeric(settled["profit"], errors="coerce").fillna(0.0)
+    settled["Beneficio acumulado"] = settled["profit_num"].cumsum()
+    settled["Pick #"] = range(1, len(settled)+1)
+    c1,c2 = st.columns([2,1])
+    with c1:
+        st.markdown('<div class="tep-section-title">📈 Evolución del beneficio</div>', unsafe_allow_html=True)
+        st.line_chart(settled.set_index("Pick #")[["Beneficio acumulado"]], height=220)
+    with c2:
+        st.markdown('<div class="tep-section-title">🎯 Distribución de resultados</div>', unsafe_allow_html=True)
+        wins = int((settled["status"]=="WON").sum())
+        losses = int((settled["status"]=="LOST").sum())
+        total = max(wins+losses,1)
+        st.metric("Acierto", f"{wins/total:.1%}")
+        st.metric("Ganados / Perdidos", f"{wins} / {losses}")
+
+
+aplicar_estilo_premium()
+init_db()
+
+
+@st.cache_data(ttl=600)
+def load_data():
+    return get_matches()
+
+
+@st.cache_data(ttl=3600)
+def load_upcoming_matches():
+    # V14: una carga por hora como máximo mientras la caché siga viva.
+    # El Radar reutiliza este snapshot para no quemar la cuota diaria.
+    return get_upcoming_matches()
+
+
+@st.cache_data(ttl=900)
+def load_tennis_odds():
+    result = get_tennis_odds()
+    result["_fetched_at"] = pd.Timestamp.now(tz="UTC").isoformat()
+    return result
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def load_physical_status(player):
+    return analyse_physical_status(player)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def resolver_partido_cached(
+    jugador_a_api,
+    jugador_b_api,
+    data_version
+):
+    df_local = load_data()
+
+    return resolver_partido(
+        jugador_a_api,
+        jugador_b_api,
+        df_local
+    )
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def predict_match_cached(
+    jugador_a,
+    jugador_b,
+    superficie_modelo,
+    recent_window,
+    use_elo,
+    data_version
+):
+    df_local = load_data()
+
+    return predict_match_v42(
+        df_local,
+        jugador_a,
+        jugador_b,
+        surface=superficie_modelo,
+        recent_window=recent_window,
+        use_elo=use_elo,
+        data_version=data_version
+    )
+
+
+
+# =========================================================
+# PRE-MATCH ODDS LOCK
+# =========================================================
+#
+# Regla:
+# - antes del inicio -> guardamos la última cuota válida vista
+# - después del inicio -> JAMÁS usamos la cuota actual de la API
+# - después del inicio -> sólo usamos el último snapshot pre-match guardado
+# - si no existe snapshot pre-match -> no calculamos EV / Top Pick
+#
+# La base se crea al lado de app.py y persiste entre reinicios.
+PREMATCH_ODDS_DB = (
+    Path(__file__)
+    .resolve()
+    .with_name("prematch_odds.db")
+)
+
+
+def _connect_prematch_odds():
+    conn = sqlite3.connect(
+        PREMATCH_ODDS_DB,
+        timeout=10,
+    )
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_prematch_odds_db():
+    with _connect_prematch_odds() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS prematch_odds (
+                match_key TEXT PRIMARY KEY,
+
+                fixture_id TEXT,
+                fixture_alt_id TEXT,
+                event_date TEXT,
+                start_time TEXT,
+                tournament TEXT,
+
+                player_a TEXT NOT NULL,
+                player_b TEXT NOT NULL,
+
+                odds_a REAL NOT NULL,
+                bookmaker_a TEXT,
+                odds_b REAL NOT NULL,
+                bookmaker_b TEXT,
+
+                market_quality TEXT,
+                valid_bookmakers INTEGER,
+                outliers_discarded INTEGER,
+                exchanges_discarded INTEGER,
+                consensus_a REAL,
+                consensus_b REAL,
+
+                sport_key TEXT,
+                odds_commence_time TEXT,
+
+                captured_at TEXT NOT NULL,
+                locked_at TEXT
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS
+            idx_prematch_odds_start
+            ON prematch_odds(start_time)
+            """
+        )
+
+
+def _odds_name_key(value):
+    value = str(
+        value
+        or ""
+    ).strip().lower()
+
+    return " ".join(
+        value.split()
+    )
+
+
+def _prematch_match_key(
+    partido,
+    player_a,
+    player_b
+):
+    # Live Tennis API expone id y match_id.
+    # Priorizamos match_id y conservamos el fallback.
+    match_id = str(
+        partido.get(
+            "match_id"
+        )
+        or ""
+    ).strip()
+
+    fixture_id = str(
+        partido.get(
+            "id"
+        )
+        or ""
+    ).strip()
+
+    if match_id:
+        return f"match:{match_id}"
+
+    if fixture_id:
+        return f"fixture:{fixture_id}"
+
+    # Fallback determinista para que siga siendo estable
+    # aunque un proveedor no entregue IDs.
+    players = sorted(
+        [
+            _odds_name_key(
+                player_a
+            ),
+            _odds_name_key(
+                player_b
+            ),
+        ]
+    )
+
+    raw = "|".join(
+        [
+            str(
+                partido.get(
+                    "event_date",
+                    ""
+                )
+            ),
+            str(
+                partido.get(
+                    "start_time",
+                    ""
+                )
+            ),
+            str(
+                partido.get(
+                    "tournament",
+                    ""
+                )
+            ),
+            players[0],
+            players[1],
+        ]
+    )
+
+    digest = hashlib.sha1(
+        raw.encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+    return f"fallback:{digest}"
+
+
+def _utc_timestamp(value):
+    if value is None:
+        return None
+
+    try:
+        parsed = pd.to_datetime(
+            value,
+            utc=True,
+            errors="coerce",
+        )
+
+        if pd.isna(
+            parsed
+        ):
+            return None
+
+        return parsed
+
+    except Exception:
+        return None
+
+
+def _inicio_mercado(
+    partido,
+    datos_cuotas=None
+):
+    """
+    V13.5.7 · HORA DE INICIO FIABLE
+
+    Fuente principal: Live Tennis fixture.start_time.
+
+    Motivo:
+    The Odds API puede devolver commence_time desfasado/antiguo
+    para un mercado que sigue abierto. Antes usábamos min()
+    entre ambas horas y eso hacía que un partido FUTURO se
+    clasificara erróneamente como ya empezado.
+
+    Sólo usamos commence_time de Odds API si el fixture no trae
+    una hora válida.
+    """
+    fixture_start = _utc_timestamp(
+        partido.get(
+            "start_time"
+        )
+    )
+
+    if fixture_start is not None:
+        return fixture_start
+
+    if datos_cuotas:
+        odds_start = _utc_timestamp(
+            datos_cuotas.get(
+                "commence_time"
+            )
+        )
+
+        if odds_start is not None:
+            return odds_start
+
+    return None
+
+
+def _partido_ya_empezo(
+    partido,
+    datos_cuotas=None
+):
+    """
+    V13.5.9 · CONSENSO DE INICIO
+
+    Problema corregido:
+    algunos fixtures llegan con un status antiguo/incorrecto aunque
+    tanto Live Tennis start_time como The Odds API commence_time
+    indiquen claramente un partido FUTURO.
+
+    Regla:
+    - Si AMBAS horas fiables están en el futuro -> PRE-MATCH,
+      incluso si el status del fixture viene stale.
+    - Si las fuentes horarias discrepan -> criterio conservador:
+      consideramos iniciado al alcanzar la hora más temprana.
+    - Si sólo hay una hora -> usamos esa.
+    """
+    status = str(
+        partido.get(
+            "status",
+            ""
+        )
+        or ""
+    ).strip().lower()
+
+    ahora = pd.Timestamp.now(
+        tz="UTC"
+    )
+
+    fixture_start = _utc_timestamp(
+        partido.get(
+            "start_time"
+        )
+    )
+
+    odds_start = None
+
+    if datos_cuotas:
+        odds_start = _utc_timestamp(
+            datos_cuotas.get(
+                "commence_time"
+            )
+        )
+
+    # CASO CLAVE:
+    # las dos fuentes independientes dicen FUTURO.
+    # Un status "finished/live" aquí se considera stale.
+    if (
+        fixture_start is not None
+        and odds_start is not None
+        and ahora < fixture_start
+        and ahora < odds_start
+    ):
+        return False
+
+    closed_statuses = {
+        "live",
+        "in_progress",
+        "in progress",
+        "started",
+        "playing",
+        "completed",
+        "finished",
+        "ended",
+        "retired",
+        "walkover",
+        "wo",
+        "default",
+        "cancelled",
+        "canceled",
+        "abandoned",
+    }
+
+    # Fuera del consenso-futuro, un estado explícito cerrado manda.
+    if status in closed_statuses:
+        return True
+
+    # Si tenemos ambas horas pero discrepan, usamos la más temprana
+    # para impedir que una cuota in-play se cuele como pre-match.
+    if (
+        fixture_start is not None
+        and odds_start is not None
+    ):
+        return bool(
+            ahora
+            >=
+            min(
+                fixture_start,
+                odds_start
+            )
+        )
+
+    if fixture_start is not None:
+        return bool(
+            ahora
+            >=
+            fixture_start
+        )
+
+    if odds_start is not None:
+        return bool(
+            ahora
+            >=
+            odds_start
+        )
+
+    # Sin status cerrado ni hora fiable, no afirmamos que haya empezado.
+    return False
+
+
+def _load_prematch_snapshot(
+    match_key
+):
+    _init_prematch_odds_db()
+
+    with _connect_prematch_odds() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM prematch_odds
+            WHERE match_key = ?
+            """,
+            (
+                match_key,
+            )
+        ).fetchone()
+
+    return row
+
+
+def _snapshot_to_market(
+    row,
+    *,
+    locked
+):
+    if row is None:
+        return None
+
+    return {
+        "jugador_a": row[
+            "player_a"
+        ],
+        "jugador_b": row[
+            "player_b"
+        ],
+
+        "cuota_a": float(
+            row[
+                "odds_a"
+            ]
+        ),
+        "casa_a": (
+            row[
+                "bookmaker_a"
+            ]
+            or ""
+        ),
+
+        "cuota_b": float(
+            row[
+                "odds_b"
+            ]
+        ),
+        "casa_b": (
+            row[
+                "bookmaker_b"
+            ]
+            or ""
+        ),
+
+        "commence_time": (
+            row[
+                "odds_commence_time"
+            ]
+            or row[
+                "start_time"
+            ]
+        ),
+
+        "sport_key": (
+            row[
+                "sport_key"
+            ]
+            or ""
+        ),
+
+        "calidad_mercado": (
+            row[
+                "market_quality"
+            ]
+            or "N/D"
+        ),
+
+        "casas_validas": int(
+            row[
+                "valid_bookmakers"
+            ]
+            or 0
+        ),
+
+        "outliers_descartados": int(
+            row[
+                "outliers_discarded"
+            ]
+            or 0
+        ),
+
+        "exchanges_descartados": int(
+            row[
+                "exchanges_discarded"
+            ]
+            or 0
+        ),
+
+        "prob_consenso_a": row[
+            "consensus_a"
+        ],
+
+        "prob_consenso_b": row[
+            "consensus_b"
+        ],
+
+        # Metadatos propios.
+        "prematch_only": True,
+        "prematch_locked": bool(
+            locked
+        ),
+        "prematch_snapshot": True,
+        "captured_at": row[
+            "captured_at"
+        ],
+        "locked_at": row[
+            "locked_at"
+        ],
+        "odds_source": (
+            "LOCKED_PREMATCH"
+            if locked
+            else "CACHED_PREMATCH"
+        ),
+    }
+
+
+def _save_prematch_snapshot(
+    partido,
+    player_a,
+    player_b,
+    datos_cuotas
+):
+    """
+    Sólo debe llamarse ANTES del inicio.
+    Cada actualización válida reemplaza a la anterior:
+    al final tendremos la última cuota pre-match capturada.
+    """
+    _init_prematch_odds_db()
+
+    match_key = _prematch_match_key(
+        partido,
+        player_a,
+        player_b
+    )
+
+    captured_at = pd.Timestamp.now(
+        tz="UTC"
+    ).isoformat()
+
+    fixture_id = str(
+        partido.get(
+            "match_id"
+        )
+        or ""
+    ).strip()
+
+    fixture_alt_id = str(
+        partido.get(
+            "id"
+        )
+        or ""
+    ).strip()
+
+    with _connect_prematch_odds() as conn:
+        conn.execute(
+            """
+            INSERT INTO prematch_odds (
+                match_key,
+                fixture_id,
+                fixture_alt_id,
+                event_date,
+                start_time,
+                tournament,
+                player_a,
+                player_b,
+                odds_a,
+                bookmaker_a,
+                odds_b,
+                bookmaker_b,
+                market_quality,
+                valid_bookmakers,
+                outliers_discarded,
+                exchanges_discarded,
+                consensus_a,
+                consensus_b,
+                sport_key,
+                odds_commence_time,
+                captured_at,
+                locked_at
+            )
+            VALUES (
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, NULL
+            )
+            ON CONFLICT(match_key)
+            DO UPDATE SET
+                fixture_id = excluded.fixture_id,
+                fixture_alt_id = excluded.fixture_alt_id,
+                event_date = excluded.event_date,
+                start_time = excluded.start_time,
+                tournament = excluded.tournament,
+                player_a = excluded.player_a,
+                player_b = excluded.player_b,
+                odds_a = excluded.odds_a,
+                bookmaker_a = excluded.bookmaker_a,
+                odds_b = excluded.odds_b,
+                bookmaker_b = excluded.bookmaker_b,
+                market_quality = excluded.market_quality,
+                valid_bookmakers = excluded.valid_bookmakers,
+                outliers_discarded = excluded.outliers_discarded,
+                exchanges_discarded = excluded.exchanges_discarded,
+                consensus_a = excluded.consensus_a,
+                consensus_b = excluded.consensus_b,
+                sport_key = excluded.sport_key,
+                odds_commence_time = excluded.odds_commence_time,
+                captured_at = excluded.captured_at
+            """,
+            (
+                match_key,
+                fixture_id,
+                fixture_alt_id,
+                str(
+                    partido.get(
+                        "event_date",
+                        ""
+                    )
+                ),
+                str(
+                    partido.get(
+                        "start_time",
+                        ""
+                    )
+                ),
+                str(
+                    partido.get(
+                        "tournament",
+                        ""
+                    )
+                ),
+                player_a,
+                player_b,
+                float(
+                    datos_cuotas[
+                        "cuota_a"
+                    ]
+                ),
+                str(
+                    datos_cuotas.get(
+                        "casa_a",
+                        ""
+                    )
+                ),
+                float(
+                    datos_cuotas[
+                        "cuota_b"
+                    ]
+                ),
+                str(
+                    datos_cuotas.get(
+                        "casa_b",
+                        ""
+                    )
+                ),
+                str(
+                    datos_cuotas.get(
+                        "calidad_mercado",
+                        "N/D"
+                    )
+                ),
+                int(
+                    datos_cuotas.get(
+                        "casas_validas",
+                        0
+                    )
+                    or 0
+                ),
+                int(
+                    datos_cuotas.get(
+                        "outliers_descartados",
+                        0
+                    )
+                    or 0
+                ),
+                int(
+                    datos_cuotas.get(
+                        "exchanges_descartados",
+                        0
+                    )
+                    or 0
+                ),
+                datos_cuotas.get(
+                    "prob_consenso_a"
+                ),
+                datos_cuotas.get(
+                    "prob_consenso_b"
+                ),
+                str(
+                    datos_cuotas.get(
+                        "sport_key",
+                        ""
+                    )
+                ),
+                str(
+                    datos_cuotas.get(
+                        "commence_time",
+                        ""
+                    )
+                ),
+                captured_at,
+            )
+        )
+
+    return captured_at
+
+
+def resolver_cuotas_prematch(
+    partido,
+    player_a,
+    player_b,
+    datos_cuotas_actuales
+):
+    """
+    Único punto de entrada para cuotas dentro de la app.
+
+    PRE-MATCH:
+      guarda/refresca la última cuota válida.
+
+    POST-INICIO:
+      ignora por completo datos_cuotas_actuales,
+      aunque The Odds API siga devolviendo una línea LIVE.
+      Sólo devuelve el snapshot pre-match persistido.
+    """
+    match_key = _prematch_match_key(
+        partido,
+        player_a,
+        player_b
+    )
+
+    empezado = _partido_ya_empezo(
+        partido,
+        datos_cuotas_actuales
+    )
+
+    snapshot = _load_prematch_snapshot(
+        match_key
+    )
+
+    if empezado:
+        if snapshot is None:
+            # Regla crítica:
+            # nunca sustituimos un snapshot inexistente
+            # por una cuota in-play.
+            return None
+
+        locked_at = pd.Timestamp.now(
+            tz="UTC"
+        ).isoformat()
+
+        if not snapshot[
+            "locked_at"
+        ]:
+            with _connect_prematch_odds() as conn:
+                conn.execute(
+                    """
+                    UPDATE prematch_odds
+                    SET locked_at = ?
+                    WHERE match_key = ?
+                      AND locked_at IS NULL
+                    """,
+                    (
+                        locked_at,
+                        match_key,
+                    )
+                )
+
+            snapshot = _load_prematch_snapshot(
+                match_key
+            )
+
+        return _snapshot_to_market(
+            snapshot,
+            locked=True
+        )
+
+    # Todavía no ha empezado.
+    # Si existe una línea válida actual, ésta se convierte
+    # en nuestro snapshot pre-match más reciente.
+    if datos_cuotas_actuales:
+        captured_at = _save_prematch_snapshot(
+            partido,
+            player_a,
+            player_b,
+            datos_cuotas_actuales
+        )
+
+        result = dict(
+            datos_cuotas_actuales
+        )
+
+        result.update(
+            {
+                "prematch_only": True,
+                "prematch_locked": False,
+                "prematch_snapshot": False,
+                "captured_at": captured_at,
+                "locked_at": None,
+                "odds_source": "CURRENT_PREMATCH",
+            }
+        )
+
+        return result
+
+    # Si temporalmente desaparece el mercado antes del inicio,
+    # podemos seguir enseñando el último snapshot válido,
+    # sin convertirlo en una cuota LIVE.
+    if snapshot is not None:
+        return _snapshot_to_market(
+            snapshot,
+            locked=False
+        )
+
+    return None
+
+
+def normalizar_superficie(superficie):
+    if not superficie:
+        return None
+
+    superficie = str(superficie).strip().lower()
+
+    mapa = {
+        "hard": "Hard",
+        "clay": "Clay",
+        "grass": "Grass"
+    }
+
+    return mapa.get(superficie)
+
+
+def formatear_hora_utc(start_time):
+    if not start_time:
+        return ""
+
+    try:
+        fecha = pd.to_datetime(start_time, utc=True)
+        return fecha.strftime("%H:%M UTC")
+    except Exception:
+        return str(start_time)
+
+
+def calcular_value_score(
+    ev,
+    pick_probability,
+    market_quality,
+    valid_bookmakers
+):
+    """
+    Score 0-100 para PRIORIZAR picks, no para estimar
+    una probabilidad de ganar.
+
+    45 puntos -> EV
+    25 puntos -> confianza global del partido
+    20 puntos -> calidad del mercado
+    10 puntos -> número de casas válidas
+    """
+    ev = max(
+        float(ev or 0.0),
+        0.0
+    )
+
+    pick_probability = max(
+        min(
+            float(
+                pick_probability
+                or 0.0
+            ),
+            1.0
+        ),
+        0.0
+    )
+
+    valid_bookmakers = max(
+        int(
+            valid_bookmakers
+            or 0
+        ),
+        0
+    )
+
+    ev_component = (
+        min(
+            ev,
+            0.25
+        )
+        / 0.25
+        * 45.0
+    )
+
+    confidence_component = (
+        min(
+            max(
+                (
+                    pick_probability
+                    - 0.60
+                )
+                / 0.25,
+                0.0
+            ),
+            1.0
+        )
+        * 25.0
+    )
+
+    quality_points = {
+        "Alta": 20.0,
+        "Media": 13.0,
+        "Baja": 6.0,
+    }.get(
+        str(
+            market_quality
+            or ""
+        ).strip(),
+        0.0
+    )
+
+    books_component = (
+        min(
+            valid_bookmakers,
+            8
+        )
+        / 8.0
+        * 10.0
+    )
+
+    return round(
+        min(
+            ev_component
+            + confidence_component
+            + quality_points
+            + books_component,
+            100.0
+        ),
+        1
+    )
+
+
+def categoria_value_score(score):
+    score = float(
+        score
+        or 0.0
+    )
+
+    if score >= 80:
+        return "💎 ELITE VALUE"
+
+    if score >= 65:
+        return "🔥 VALUE FUERTE"
+
+    if score >= 50:
+        return "🟢 VALUE"
+
+    return "🟡 VALUE"
+
+
+
+# ============================================================
+# V14 · EVALUADOR DE VALUE SIN ESCRIBIR EN EL TRACKER
+# ============================================================
+def _evaluar_value_sin_guardar(
+    jugador_a,
+    jugador_b,
+    pa,
+    pb,
+    datos_cuotas,
+):
+    """
+    Misma filosofía conservadora de Top Picks, pero sin registrar
+    nada en betting_picks. El Radar debe analizar, no modificar
+    el track record.
+    """
+    if not datos_cuotas:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "SIN_MERCADO",
+        }
+
+    try:
+        cuota_a = float(datos_cuotas["cuota_a"])
+        cuota_b = float(datos_cuotas["cuota_b"])
+    except Exception:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "SIN_MERCADO",
+        }
+
+    candidates = [
+        {
+            "selection": jugador_a,
+            "prob": float(pa),
+            "odds": cuota_a,
+            "bookmaker": datos_cuotas.get("casa_a", ""),
+        },
+        {
+            "selection": jugador_b,
+            "prob": float(pb),
+            "odds": cuota_b,
+            "bookmaker": datos_cuotas.get("casa_b", ""),
+        },
+    ]
+
+    for item in candidates:
+        item["ev"] = (
+            item["prob"] * item["odds"]
+        ) - 1.0
+
+    raw_best = max(
+        candidates,
+        key=lambda item: item["ev"],
+    )
+
+    in_odds_range = [
+        item
+        for item in candidates
+        if 1.50 <= item["odds"] <= 3.00
+    ]
+
+    if not in_odds_range:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "CUOTA_FUERA_RANGO",
+            "candidate_selection": raw_best["selection"],
+            "candidate_probability": raw_best["prob"],
+            "candidate_odds": raw_best["odds"],
+            "candidate_ev": raw_best["ev"],
+        }
+
+    eligible_probability = [
+        item
+        for item in in_odds_range
+        if item["prob"] >= 0.60
+    ]
+
+    if not eligible_probability:
+        best_range = max(
+            in_odds_range,
+            key=lambda item: item["ev"],
+        )
+
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "PROB_SELECCION_BAJA",
+            "candidate_selection": best_range["selection"],
+            "candidate_probability": best_range["prob"],
+            "candidate_odds": best_range["odds"],
+            "candidate_ev": best_range["ev"],
+        }
+
+    best = max(
+        eligible_probability,
+        key=lambda item: item["ev"],
+    )
+
+    if best["ev"] < 0.05:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "EV_INSUFICIENTE",
+            "candidate_selection": best["selection"],
+            "candidate_probability": best["prob"],
+            "candidate_odds": best["odds"],
+            "candidate_ev": best["ev"],
+        }
+
+    valid_books_raw = datos_cuotas.get(
+        "casas_validas",
+        None,
+    )
+
+    if valid_books_raw is not None:
+        try:
+            valid_books = int(
+                valid_books_raw
+                or 0
+            )
+        except Exception:
+            valid_books = 0
+
+        if valid_books < 2:
+            return {
+                "qualifies": False,
+                "inserted": False,
+                "label": "-",
+                "reason": "POCAS_CASAS",
+                "candidate_selection": best["selection"],
+                "candidate_probability": best["prob"],
+                "candidate_odds": best["odds"],
+                "candidate_ev": best["ev"],
+            }
+
+    return {
+        "qualifies": True,
+        "inserted": False,
+        "label": (
+            f"🔥 {best['selection']} "
+            f"@{best['odds']:.2f}"
+        ),
+        "reason": "TOP_PICK",
+        "selection": best["selection"],
+        "probability": best["prob"],
+        "odds": best["odds"],
+        "ev": best["ev"],
+        "bookmaker": best["bookmaker"],
+        "candidate_selection": best["selection"],
+        "candidate_probability": best["prob"],
+        "candidate_odds": best["odds"],
+        "candidate_ev": best["ev"],
+    }
+
+
+def generar_predicciones_proximos(
+    df,
+    partidos,
+    indice_cuotas=None,
+    recent_window=25,
+    use_elo=True,
+    data_version="",
+    registrar_picks=True,
+):
+    filas = []
+    no_resueltos = []
+
+    for partido in partidos:
+        jugador_a_api = partido.get("player1")
+        jugador_b_api = partido.get("player2")
+
+        try:
+            resolucion = resolver_partido_cached(
+                jugador_a_api,
+                jugador_b_api,
+                data_version
+            )
+        except Exception as exc:
+            no_resueltos.append(
+                {
+                    "partido": f"{jugador_a_api} vs {jugador_b_api}",
+                    "motivo": f"Error del resolver: {exc}"
+                }
+            )
+            continue
+
+        if not resolucion.get("ok"):
+            no_resueltos.append(
+                {
+                    "partido": f"{jugador_a_api} vs {jugador_b_api}",
+                    "motivo": (
+                        f"{jugador_a_api} → {resolucion.get('jugador_a')} | "
+                        f"{jugador_b_api} → {resolucion.get('jugador_b')}"
+                    )
+                }
+            )
+            continue
+
+        jugador_a = resolucion["jugador_a"]
+        jugador_b = resolucion["jugador_b"]
+
+        superficie_modelo = normalizar_superficie(
+            partido.get("surface")
+        )
+
+        try:
+            prediccion = predict_match_cached(
+                jugador_a,
+                jugador_b,
+                superficie_modelo,
+                recent_window,
+                use_elo,
+                data_version
+            )
+        except Exception as exc:
+            no_resueltos.append(
+                {
+                    "partido": f"{jugador_a_api} vs {jugador_b_api}",
+                    "motivo": f"Error del modelo: {exc}"
+                }
+            )
+            continue
+
+        if not prediccion.get("ok"):
+            no_resueltos.append(
+                {
+                    "partido": f"{jugador_a_api} vs {jugador_b_api}",
+                    "motivo": prediccion.get(
+                        "message",
+                        "El modelo no pudo generar predicción."
+                    )
+                }
+            )
+            continue
+
+        pa = float(prediccion["prob_a"])
+        pb = float(prediccion["prob_b"])
+
+        favorito = jugador_a_api if pa >= pb else jugador_b_api
+        prob_favorito = max(pa, pb)
+
+        datos_cuotas_actuales = None
+
+        if indice_cuotas:
+            datos_cuotas_actuales = buscar_mejores_cuotas(
+                indice_cuotas,
+                jugador_a,
+                jugador_b
+            )
+
+        # Protección PRE-MATCH:
+        # después del inicio ignoramos las cuotas actuales de la API
+        # y recuperamos únicamente el último snapshot guardado.
+        datos_cuotas = resolver_cuotas_prematch(
+            partido,
+            jugador_a,
+            jugador_b,
+            datos_cuotas_actuales
+        )
+
+        partido_iniciado = _partido_ya_empezo(
+            partido,
+            datos_cuotas_actuales
+        )
+
+        cuota_a = None
+        cuota_b = None
+        casa_a = ""
+        casa_b = ""
+        ev_a = None
+        ev_b = None
+
+        pick_auto = {
+            "qualifies": False,
+            "label": "-",
+            "reason": "SIN_MERCADO",
+        }
+
+        if datos_cuotas:
+            cuota_a = float(datos_cuotas["cuota_a"])
+            cuota_b = float(datos_cuotas["cuota_b"])
+            casa_a = datos_cuotas["casa_a"]
+            casa_b = datos_cuotas["casa_b"]
+
+            ev_a = (pa * cuota_a) - 1
+            ev_b = (pb * cuota_b) - 1
+
+            if not partido_iniciado:
+                if registrar_picks:
+                    pick_auto = evaluar_pick_automatico(
+                        partido,
+                        jugador_a,
+                        jugador_b,
+                        pa,
+                        pb,
+                        datos_cuotas,
+                        prediccion,
+                        df
+                    )
+                else:
+                    pick_auto = _evaluar_value_sin_guardar(
+                        jugador_a,
+                        jugador_b,
+                        pa,
+                        pb,
+                        datos_cuotas,
+                    )
+            else:
+                # Puede seguir mostrándose la cuota pre-match congelada,
+                # pero un partido ya iniciado NUNCA puede crear un pick nuevo.
+                pick_auto = {
+                    "qualifies": False,
+                    "inserted": False,
+                    "label": "🔒 Cuota PRE-MATCH congelada",
+                    "reason": "PARTIDO_INICIADO",
+                }
+
+        pick_selection = (
+            pick_auto.get(
+                "selection"
+            )
+            if pick_auto.get(
+                "qualifies",
+                False
+            )
+            else None
+        )
+
+        if pick_selection == jugador_a:
+            pick_probability = pa
+        elif pick_selection == jugador_b:
+            pick_probability = pb
+        else:
+            pick_probability = None
+
+        pick_ev = (
+            float(
+                pick_auto.get(
+                    "ev"
+                )
+            )
+            if pick_auto.get(
+                "qualifies",
+                False
+            )
+            else None
+        )
+
+        market_quality = (
+            datos_cuotas.get(
+                "calidad_mercado",
+                "N/D"
+            )
+            if datos_cuotas
+            else "N/D"
+        )
+
+        valid_bookmakers = (
+            int(
+                datos_cuotas.get(
+                    "casas_validas",
+                    0
+                )
+                or 0
+            )
+            if datos_cuotas
+            else 0
+        )
+
+        value_score = (
+            calcular_value_score(
+                pick_ev,
+                pick_probability,
+                market_quality,
+                valid_bookmakers
+            )
+            if pick_ev is not None
+            else 0.0
+        )
+
+        filas.append(
+            {
+                "Fecha": partido.get("event_date", ""),
+                "Hora": formatear_hora_utc(
+                    partido.get("start_time")
+                ),
+                "Torneo": partido.get(
+                    "tournament",
+                    "Desconocido"
+                ),
+                "Tour": str(
+                    partido.get("tour", "")
+                ).upper(),
+                "Superficie": superficie_modelo or "Todas",
+                "Jugador 1": jugador_a_api,
+                "Prob. J1": f"{pa * 100:.1f}%",
+                "Mejor cuota J1": (
+                    (
+                        "🔒 "
+                        if (
+                            datos_cuotas
+                            and datos_cuotas.get(
+                                "prematch_locked",
+                                False
+                            )
+                        )
+                        else ""
+                    )
+                    + f"{cuota_a:.2f}"
+                    if cuota_a is not None
+                    else "Esperando mercado"
+                ),
+                "Casa J1": casa_a or "-",
+                "EV J1": (
+                    f"{ev_a * 100:+.1f}%"
+                    if ev_a is not None
+                    else "-"
+                ),
+                "Jugador 2": jugador_b_api,
+                "Prob. J2": f"{pb * 100:.1f}%",
+                "Mejor cuota J2": (
+                    (
+                        "🔒 "
+                        if (
+                            datos_cuotas
+                            and datos_cuotas.get(
+                                "prematch_locked",
+                                False
+                            )
+                        )
+                        else ""
+                    )
+                    + f"{cuota_b:.2f}"
+                    if cuota_b is not None
+                    else "Esperando mercado"
+                ),
+                "Casa J2": casa_b or "-",
+                "EV J2": (
+                    f"{ev_b * 100:+.1f}%"
+                    if ev_b is not None
+                    else "-"
+                ),
+                "Favorito": favorito,
+                "Prob. favorito": f"{prob_favorito * 100:.1f}%",
+                "Confianza": prediccion.get(
+                    "confidence_label",
+                    "Sin dato"
+                ),
+                "Pick automático": (
+                    pick_auto.get(
+                        "label",
+                        "-"
+                    )
+                ),
+
+                # Campos internos para TOP PICKS.
+                # Se eliminan de la tabla general antes
+                # de mostrarla.
+                "_player1_full": jugador_a,
+                "_player2_full": jugador_b,
+                "_player1_live_id": partido.get(
+                    "player1_id"
+                ),
+                "_player2_live_id": partido.get(
+                    "player2_id"
+                ),
+
+                "_odds_prematch_locked": bool(
+                    datos_cuotas.get(
+                        "prematch_locked",
+                        False
+                    )
+                    if datos_cuotas
+                    else False
+                ),
+                "_odds_captured_at": (
+                    datos_cuotas.get(
+                        "captured_at"
+                    )
+                    if datos_cuotas
+                    else None
+                ),
+                "_odds_source": (
+                    datos_cuotas.get(
+                        "odds_source",
+                        "-"
+                    )
+                    if datos_cuotas
+                    else "-"
+                ),
+
+                # V14 · campos numéricos para el Radar de Valor.
+                "_prob_a": pa,
+                "_prob_b": pb,
+                "_odds_a": cuota_a,
+                "_odds_b": cuota_b,
+                "_ev_a": ev_a,
+                "_ev_b": ev_b,
+                "_edge_a": (
+                    pa - (1.0 / cuota_a)
+                    if cuota_a
+                    else None
+                ),
+                "_edge_b": (
+                    pb - (1.0 / cuota_b)
+                    if cuota_b
+                    else None
+                ),
+                "_consensus_prob_a": (
+                    datos_cuotas.get("prob_consenso_a")
+                    if datos_cuotas
+                    else None
+                ),
+                "_consensus_prob_b": (
+                    datos_cuotas.get("prob_consenso_b")
+                    if datos_cuotas
+                    else None
+                ),
+                "_outliers_discarded": int(
+                    datos_cuotas.get(
+                        "outliers_descartados",
+                        0
+                    )
+                    or 0
+                ) if datos_cuotas else 0,
+                "_exchanges_discarded": int(
+                    datos_cuotas.get(
+                        "exchanges_descartados",
+                        0
+                    )
+                    or 0
+                ) if datos_cuotas else 0,
+                "_partido_iniciado": bool(
+                    partido_iniciado
+                ),
+
+                "_pick_qualifies": bool(
+                    pick_auto.get(
+                        "qualifies",
+                        False
+                    )
+                ),
+                "_pick_selection": (
+                    pick_selection
+                ),
+                "_pick_probability": (
+                    pick_probability
+                ),
+                "_pick_odds": (
+                    float(
+                        pick_auto.get(
+                            "odds"
+                        )
+                    )
+                    if pick_auto.get(
+                        "qualifies",
+                        False
+                    )
+                    else None
+                ),
+                "_pick_ev": (
+                    pick_ev
+                ),
+                "_pick_reason": (
+                    pick_auto.get(
+                        "reason",
+                        "SIN_CLASIFICAR"
+                    )
+                ),
+                "_candidate_selection": (
+                    pick_auto.get(
+                        "candidate_selection"
+                    )
+                ),
+                "_candidate_probability": (
+                    pick_auto.get(
+                        "candidate_probability"
+                    )
+                ),
+                "_candidate_odds": (
+                    pick_auto.get(
+                        "candidate_odds"
+                    )
+                ),
+                "_candidate_ev": (
+                    pick_auto.get(
+                        "candidate_ev"
+                    )
+                ),
+                "_best_ev_raw": (
+                    max(
+                        ev_a,
+                        ev_b
+                    )
+                    if datos_cuotas
+                    else None
+                ),
+                "_market_available": (
+                    bool(
+                        datos_cuotas
+                    )
+                ),
+                "_match_confidence": (
+                    prob_favorito
+                ),
+                "_market_quality": (
+                    market_quality
+                ),
+                "_valid_bookmakers": (
+                    valid_bookmakers
+                ),
+                "_value_score": (
+                    value_score
+                ),
+                "_value_category": (
+                    categoria_value_score(
+                        value_score
+                    )
+                    if pick_auto.get(
+                        "qualifies",
+                        False
+                    )
+                    else "-"
+                ),
+                "_pick_bookmaker": (
+                    casa_a
+                    if pick_selection == jugador_a
+                    else (
+                        casa_b
+                        if pick_selection == jugador_b
+                        else ""
+                    )
+                )
+            }
+        )
+
+    return filas, no_resueltos
+
+
+
+def _cargar_predicciones_para_paginas(df, ventana, usar_elo, data_version):
+    proximos = load_upcoming_matches()
+    odds_result = load_tennis_odds()
+
+    indice_cuotas = (
+        construir_indice_cuotas(
+            odds_result.get("events", [])
+        )
+        if odds_result.get("ok")
+        else {}
+    )
+
+    filas, no_resueltos = generar_predicciones_proximos(
+        df,
+        proximos,
+        indice_cuotas,
+        recent_window=ventana,
+        use_elo=usar_elo,
+        data_version=data_version,
+    )
+
+    return proximos, odds_result, filas, no_resueltos
 
 
 def render_top_picks_page(df, ventana, usar_elo, data_version):
@@ -1857,7 +3527,7 @@ def render_resultados_live_page(df):
 
 
 # ============================================================
-# V14.2 · DISEÑO REAL + RADAR TRANSPARENTE
+# V14.2.1 · DISEÑO + RADAR + FUNCIONES RESTAURADAS
 # ============================================================
 def _navegar_a(destino):
     """
@@ -2075,6 +3745,7 @@ def _radar_build_rows(filas):
     return opportunities, alerts
 
 
+
 def _run_value_radar(
     df,
     ventana,
@@ -2178,7 +3849,6 @@ def _run_value_radar(
     ] = payload
 
     return payload
-
 
 
 def _radar_nearest_candidates(filas, limit=8):
@@ -2470,6 +4140,7 @@ def _build_jornada_table(
     return pd.DataFrame(
         rows
     )
+
 
 
 def render_value_radar_page(
