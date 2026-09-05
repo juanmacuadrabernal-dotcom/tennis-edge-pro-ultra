@@ -3468,11 +3468,18 @@ def render_resultados_live_page(df):
 
 
 # ============================================================
-# V14 · NAVEGACIÓN SIMPLE + RADAR DE VALOR
+# V14.0.1 · NAVEGACIÓN SEGURA + RADAR DE VALOR
 # ============================================================
 def _navegar_a(destino):
-    st.session_state["tep_nav"] = destino
-    st.session_state["tep_nav_mobile_safe"] = destino
+    """
+    Navegación segura en Streamlit.
+
+    No modificamos directamente las keys de widgets ya instanciados
+    (tep_nav / tep_nav_mobile_safe), porque Streamlit lo bloquea.
+    Guardamos el destino en una key auxiliar y hacemos rerun.
+    En el siguiente ciclo, antes de crear los widgets, aplicamos el destino.
+    """
+    st.session_state["tep_nav_pending"] = destino
     st.rerun()
 
 
@@ -4703,8 +4710,15 @@ NAV_OPTIONS = [
     "◈  Modelo / Analizador",
 ]
 
+# V14.0.1 · Consumimos navegación pendiente ANTES
+# de instanciar los widgets de navegación.
+pending_nav = st.session_state.pop("tep_nav_pending", None)
+
 if "tep_nav" not in st.session_state:
     st.session_state["tep_nav"] = NAV_OPTIONS[0]
+
+if pending_nav in NAV_OPTIONS:
+    st.session_state["tep_nav"] = pending_nav
 
 # V14: si el navegador conserva una página antigua,
 # volvemos a Inicio.
@@ -4713,6 +4727,9 @@ if st.session_state.get("tep_nav") not in NAV_OPTIONS:
 
 if "tep_nav_mobile_safe" not in st.session_state:
     st.session_state["tep_nav_mobile_safe"] = st.session_state["tep_nav"]
+
+if pending_nav in NAV_OPTIONS:
+    st.session_state["tep_nav_mobile_safe"] = pending_nav
 
 if st.session_state.get("tep_nav_mobile_safe") not in NAV_OPTIONS:
     st.session_state["tep_nav_mobile_safe"] = st.session_state["tep_nav"]
