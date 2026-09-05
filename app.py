@@ -1,4 +1,4 @@
-# BUILD: V13.5.11 · LIGHT MENU · DASHBOARD + PARTIDOS + ANALIZADOR
+# BUILD: V14.0 · RADAR DE VALOR · UI SIMPLE · ANALIZADOR INTACTO
 import os
 import html
 import textwrap
@@ -812,796 +812,216 @@ def render_dashboard_premium_v13(
     usar_elo,
     data_version,
 ):
-    render_dashboard_header(
-        estado_v42,
-        track
-    )
-
-    render_dashboard_kpis(
-        df,
-        estado_v42,
-        track,
-        last_update
-    )
-
-    # Cargamos partidos + cuotas automáticamente para que el Dashboard
-    # tenga contenido real, como el mockup original.
-    filas = []
-    odds_result = {"ok": False, "events": []}
-
-    try:
-        with st.spinner(
-            "Preparando dashboard con partidos y cuotas..."
-        ):
-            _, odds_result, filas, _ = (
-                _cargar_predicciones_para_paginas(
-                    df,
-                    ventana,
-                    usar_elo,
-                    data_version
-                )
-            )
-    except Exception:
-        filas = []
-
-    raw = (
-        pd.DataFrame(
-            filas
-        )
-        if filas
-        else pd.DataFrame()
-    )
-
-    # -----------------------------------------------------
-    # MATCH DESTACADO
-    # -----------------------------------------------------
-    featured_html = _html_block(
+    """
+    V14 · INICIO SIMPLE.
+    No llama a APIs automáticamente. El usuario decide cuándo lanzar
+    el Radar de Valor, evitando gasto de cuota y ruido técnico.
+    """
+    st.markdown(
         """
-        <div class="tep-card">
-          <div class="tep-card-head">
-            <div class="tep-card-title">Próximo partido destacado</div>
-            <div class="tep-card-tag">Sin partido disponible</div>
+        <div style="
+            padding:1.25rem 1.3rem;
+            border:1px solid rgba(31,202,191,.18);
+            border-radius:18px;
+            background:
+              radial-gradient(circle at 92% 8%, rgba(27,210,196,.14), transparent 30%),
+              linear-gradient(135deg, rgba(10,25,38,.96), rgba(7,17,28,.98));
+            margin-bottom:1rem;
+        ">
+          <div style="font-size:.78rem;color:#63dcd3;font-weight:800;letter-spacing:.08em;">
+            TENNIS EDGE PRO
           </div>
-          <div class="tep-empty">Carga de próximos partidos no disponible en este momento.</div>
-        </div>
-        """
-    )
-
-    if not raw.empty:
-        orden = raw.copy()
-        orden["_fecha_sort"] = pd.to_datetime(
-            orden["Fecha"],
-            errors="coerce"
-        )
-        orden["_hora_sort"] = (
-            orden["Hora"]
-            .astype(str)
-        )
-
-        # Priorizamos partidos con mercado y después por confianza.
-        orden = orden.sort_values(
-            [
-                "_market_available",
-                "_match_confidence",
-                "_fecha_sort",
-            ],
-            ascending=[
-                False,
-                False,
-                True,
-            ]
-        )
-
-        featured = orden.iloc[0]
-
-        j1_raw = str(
-            featured.get(
-                "_player1_full",
-                featured[
-                    "Jugador 1"
-                ]
-            )
-        )
-
-        j2_raw = str(
-            featured.get(
-                "_player2_full",
-                featured[
-                    "Jugador 2"
-                ]
-            )
-        )
-
-        j1 = html.escape(
-            j1_raw
-        )
-
-        j2 = html.escape(
-            j2_raw
-        )
-
-        avatar_j1 = _avatar_jugador_html(
-            j1_raw
-        )
-
-        avatar_j2 = _avatar_jugador_html(
-            j2_raw
-        )
-
-        torneo = html.escape(
-            str(
-                featured.get(
-                    "Torneo",
-                    "-"
-                )
-            )
-        )
-
-        tour = html.escape(
-            str(
-                featured.get(
-                    "Tour",
-                    ""
-                )
-            )
-        )
-
-        surface = html.escape(
-            str(
-                featured.get(
-                    "Superficie",
-                    "-"
-                )
-            )
-        )
-
-        hora = html.escape(
-            str(
-                featured.get(
-                    "Hora",
-                    "-"
-                )
-            )
-        )
-
-        fecha = html.escape(
-            str(
-                featured.get(
-                    "Fecha",
-                    "-"
-                )
-            )
-        )
-
-        pa = _pct_from_text(
-            featured[
-                "Prob. J1"
-            ]
-        )
-        pb = _pct_from_text(
-            featured[
-                "Prob. J2"
-            ]
-        )
-
-        left = max(
-            min(
-                pa * 100.0,
-                96.0
-            ),
-            4.0
-        )
-
-        featured_html = _html_block(
-            f"""
-            <div class="tep-card">
-          <div class="tep-card-head">
-            <div class="tep-card-title">Próximo partido destacado</div>
-            <div class="tep-card-tag">{tour} · {torneo}</div>
+          <div style="font-size:2rem;font-weight:900;color:#f3fbff;margin-top:.2rem;">
+            ¿Qué quieres encontrar hoy?
           </div>
-          <div class="tep-feature-body">
-            <div class="tep-match-time">{fecha} · {hora}<span>{surface}</span></div>
-            <div class="tep-players">
-              <div class="tep-player">
-                {avatar_j1}
-                <div class="tep-player-name">{j1}</div>
-                <div class="tep-player-meta">Jugador A</div>
-              </div>
-              <div class="tep-vs">VS</div>
-              <div class="tep-player">
-                {avatar_j2}
-                <div class="tep-player-name">{j2}</div>
-                <div class="tep-player-meta">Jugador B</div>
-              </div>
-            </div>
-            <div class="tep-prob-title">Probabilidad de victoria · Ensemble V4.2</div>
-            <div class="tep-probbar" style="--left:{left:.1f}%;">
-              <div class="tep-prob-a">{pa:.1%}</div>
-              <div class="tep-prob-b">{pb:.1%}</div>
-            </div>
-            <div class="tep-feature-foot">
-              Favorito: <b>{html.escape(str(featured.get("Favorito","-")))}</b>
-              · Confianza: {html.escape(str(featured.get("Confianza","-")))}
-            </div>
+          <div style="color:#91a9bb;margin-top:.3rem;max-width:760px;">
+            Hemos simplificado la app: primero encuentra oportunidades,
+            después revisa la jornada y sólo entra al detalle cuando te interese.
           </div>
-            </div>
-            """
-        )
-
-    # -----------------------------------------------------
-    # TOP PICKS VISUALES
-    # -----------------------------------------------------
-    top_rows = []
-
-    if not raw.empty:
-        fechas = pd.to_datetime(
-            raw[
-                "Fecha"
-            ],
-            errors="coerce"
-        )
-
-        hoy = pd.Timestamp.now(tz="Europe/Madrid").date()
-
-        top = raw.loc[
-            (
-                fechas.dt.date
-                ==
-                hoy
-            )
-            &
-            (
-                raw[
-                    "_pick_qualifies"
-                ]
-                ==
-                True
-            )
-        ].copy()
-
-        top = top.sort_values(
-            "_value_score",
-            ascending=False
-        ).head(5)
-
-        for _, row in top.iterrows():
-            prob = float(
-                row.get(
-                    "_pick_probability",
-                    0.0
-                )
-                or 0.0
-            )
-
-            odds = float(
-                row.get(
-                    "_pick_odds",
-                    0.0
-                )
-                or 0.0
-            )
-
-            ev = float(
-                row.get(
-                    "_pick_ev",
-                    0.0
-                )
-                or 0.0
-            )
-
-            level = str(
-                row.get(
-                    "_value_category",
-                    "VALUE"
-                )
-            )
-
-            badge_class = (
-                ""
-                if float(
-                    row.get(
-                        "_value_score",
-                        0.0
-                    )
-                    or 0.0
-                ) >= 65
-                else "medium"
-            )
-
-            matchup = (
-                f"{row.get('Jugador 1','')} vs "
-                f"{row.get('Jugador 2','')}"
-            )
-
-            top_rows.append(
-                _html_block(
-                    f"""
-                    <div class="tep-pick-row">
-                  <div>
-                    <div class="tep-pick-name">⭐ {html.escape(str(row.get("_pick_selection","-")))}</div>
-                    <div class="tep-pick-sub">{html.escape(matchup)}</div>
-                  </div>
-                  <div class="tep-num">
-                    {prob:.1%}
-                    <div class="tep-mini-prob"><span style="width:{max(min(prob*100,100),0):.1f}%"></span></div>
-                  </div>
-                  <div class="tep-num">{odds:.2f}</div>
-                  <div class="tep-ev-good">{ev:+.1%}</div>
-                  <div><span class="tep-badge {badge_class}">{html.escape(level.replace("💎 ","").replace("🔥 ","").replace("🟢 ","").replace("🟡 ",""))}</span></div>
-                    </div>
-                    """
-                )
-            )
-
-    if top_rows:
-        top_body = "".join(
-            top_rows
-        )
-    else:
-        top_body = (
-            '<div class="tep-empty">'
-            'Hoy no hay picks que superen simultáneamente '
-            'confianza ≥70%, EV ≥+5% y mercado validado.'
-            '</div>'
-        )
-
-    top_html = _html_block(
-        f"""
-        <div class="tep-card">
-      <div class="tep-card-head">
-        <div class="tep-card-title">Top Picks</div>
-        <div class="tep-card-tag">{len(top_rows)} hoy</div>
-      </div>
-      <div class="tep-picks">
-        <div class="tep-pick-head">
-          <div>Pick</div><div>Probabilidad</div><div>Cuota</div><div>EV</div><div>Confianza</div>
         </div>
-        {top_body}
-      </div>
-        </div>
-        """
+        """,
+        unsafe_allow_html=True,
     )
 
-    # -----------------------------------------------------
-    # PERFORMANCE REAL
-    # -----------------------------------------------------
-    picks = track.get(
-        "picks",
-        pd.DataFrame()
-    )
+    s1, s2, s3 = st.columns(3)
 
-    settled = pd.DataFrame()
-
-    if (
-        isinstance(
-            picks,
-            pd.DataFrame
+    with s1:
+        st.metric(
+            "Base histórica",
+            f"{len(df):,}".replace(",", "."),
+            help="Partidos guardados que alimentan el modelo.",
         )
-        and not picks.empty
-        and "status" in picks.columns
-    ):
-        settled = picks[
-            picks[
-                "status"
-            ].isin(
-                [
-                    "WON",
-                    "LOST"
-                ]
+
+    with s2:
+        st.metric(
+            "Modelo",
+            "✅ Listo"
+            if estado_v42.get("ok")
+            else "⚠️ Backup",
+        )
+
+    with s3:
+        st.metric(
+            "Última actualización",
+            str(last_update),
+        )
+
+    st.markdown("### 🚀 Accesos rápidos")
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        with st.container(border=True):
+            st.markdown("### 🔥 Buscar valor")
+            st.write(
+                "Analiza ATP + Challenger de una vez, cruza el modelo "
+                "con las cuotas y ordena las mejores oportunidades."
             )
-        ].copy()
 
-    summary = track.get(
-        "summary",
-        {}
+            if st.button(
+                "ABRIR RADAR DE VALOR",
+                type="primary",
+                width="stretch",
+                key="home_go_radar",
+            ):
+                _navegar_a(
+                    "🔥  Radar de Valor"
+                )
+
+    with c2:
+        with st.container(border=True):
+            st.markdown("### 📅 Ver la jornada")
+            st.write(
+                "Mira todos los partidos de forma limpia: favoritos, "
+                "probabilidades, mercados disponibles y señal de valor."
+            )
+
+            if st.button(
+                "VER JORNADA",
+                width="stretch",
+                key="home_go_jornada",
+            ):
+                _navegar_a(
+                    "📅  Jornada"
+                )
+
+    with c3:
+        with st.container(border=True):
+            st.markdown("### 🎯 Análisis individual")
+            st.write(
+                "El analizador manual de siempre, sin cambios, para "
+                "estudiar cualquier enfrentamiento en profundidad."
+            )
+
+            if st.button(
+                "ANALIZAR PARTIDO",
+                width="stretch",
+                key="home_go_manual",
+            ):
+                _navegar_a(
+                    "◈  Modelo / Analizador"
+                )
+
+    payload = st.session_state.get(
+        "tep_radar_payload"
     )
 
-    profit = float(
-        summary.get(
-            "profit",
-            0.0
+    if payload:
+        opportunities = payload.get(
+            "opportunities",
+            []
         )
-        or 0.0
-    )
 
-    roi = float(
-        summary.get(
-            "roi",
-            0.0
-        )
-        or 0.0
-    )
+        st.markdown("### 🧭 Último Radar")
 
-    profits = (
-        pd.to_numeric(
-            settled.get(
-                "profit",
-                pd.Series(
-                    dtype=float
+        r1, r2, r3, r4 = st.columns(4)
+
+        r1.metric(
+            "Partidos",
+            int(
+                payload.get(
+                    "fixtures_count",
+                    0
                 )
             ),
-            errors="coerce"
         )
-        .fillna(
-            0.0
-        )
-        .tolist()
-    )
-
-    polyline = _dashboard_profit_svg(
-        profits
-    )
-
-    total_picks = (
-        len(
-            picks
-        )
-        if isinstance(
-            picks,
-            pd.DataFrame
-        )
-        else 0
-    )
-
-    conf_hi = 0
-    conf_mid = 0
-    conf_low = 0
-
-    if (
-        isinstance(
-            picks,
-            pd.DataFrame
-        )
-        and not picks.empty
-        and "match_confidence" in picks.columns
-    ):
-        conf_values = pd.to_numeric(
-            picks[
-                "match_confidence"
-            ],
-            errors="coerce"
-        ).dropna()
-
-        conf_hi = int(
-            (
-                conf_values
-                >= 0.75
-            ).sum()
-        )
-
-        conf_mid = int(
-            (
-                (
-                    conf_values
-                    >= 0.70
+        r2.metric(
+            "Con predicción",
+            int(
+                payload.get(
+                    "predicted_count",
+                    0
                 )
-                &
-                (
-                    conf_values
-                    < 0.75
-                )
-            ).sum()
+            ),
         )
-
-        conf_low = max(
+        r3.metric(
+            "Con cuotas",
+            int(
+                payload.get(
+                    "market_count",
+                    0
+                )
+            ),
+        )
+        r4.metric(
+            "Oportunidades",
             len(
-                conf_values
-            )
-            -
-            conf_hi
-            -
-            conf_mid,
-            0
-        )
-
-    conf_total = max(
-        conf_hi
-        + conf_mid
-        + conf_low,
-        1
-    )
-
-    hi_pct = (
-        conf_hi
-        / conf_total
-        * 100
-    )
-    mid_pct = (
-        conf_mid
-        / conf_total
-        * 100
-    )
-    low_pct = (
-        conf_low
-        / conf_total
-        * 100
-    )
-
-    a_deg = (
-        hi_pct
-        / 100
-        * 360
-    )
-    b_deg = (
-        (
-            hi_pct
-            + mid_pct
-        )
-        / 100
-        * 360
-    )
-
-    right_html = _html_block(
-        f"""
-        <div class="tep-right-stack">
-      <div class="tep-mini-card">
-        <div class="tep-mini-title">Evolución del beneficio</div>
-        <div class="tep-profit-value">{profit:+.2f} u</div>
-        <div class="tep-profit-sub">ROI acumulado {roi:+.1%} · resultados reales del tracker</div>
-        <div class="tep-fake-line">
-          <svg viewBox="0 0 100 70" preserveAspectRatio="none" aria-hidden="true">
-            <polyline fill="none" stroke="#19cec4" stroke-width="2.2" points="{polyline}" />
-          </svg>
-        </div>
-      </div>
-      <div class="tep-mini-card">
-        <div class="tep-mini-title">Distribución por confianza</div>
-        <div class="tep-confidence-wrap">
-          <div class="tep-donut" style="--a:{a_deg:.1f}deg;--b:{b_deg:.1f}deg;">
-            <div class="tep-donut-center">{total_picks}<span>Picks</span></div>
-          </div>
-          <div class="tep-legend">
-            <div class="tep-leg"><div class="tep-leg-left"><span class="tep-leg-dot"></span>Muy fuerte / Elite</div><b>{hi_pct:.1f}%</b></div>
-            <div class="tep-leg"><div class="tep-leg-left"><span class="tep-leg-dot yellow"></span>Fuerte 70–74.9%</div><b>{mid_pct:.1f}%</b></div>
-            <div class="tep-leg"><div class="tep-leg-left"><span class="tep-leg-dot red"></span>Otros</div><b>{low_pct:.1f}%</b></div>
-          </div>
-        </div>
-      </div>
-        </div>
-        """
-    )
-
-    dashboard_html = (
-        '<div class="tep-dash-grid">'
-        + featured_html
-        + top_html
-        + right_html
-        + '</div>'
-    )
-
-    st.markdown(
-        dashboard_html,
-        unsafe_allow_html=True
-    )
-
-    # -----------------------------------------------------
-    # RENDIMIENTO POR CONFIANZA + PICKS RECIENTES
-    # -----------------------------------------------------
-    st.markdown(
-        '<div class="tep-lower-grid">',
-        unsafe_allow_html=True
-    )
-
-    by_conf = track.get(
-        "by_confidence",
-        pd.DataFrame()
-    )
-
-    st.markdown(
-        _html_block(
-            """
-            <div class="tep-card">
-              <div class="tep-section-subhead">
-                <h3>Rendimiento por confianza</h3>
-                <span class="tep-note">Track Record real · 1 unidad por pick</span>
-              </div>
-            """
-        ),
-        unsafe_allow_html=True
-    )
-
-    if (
-        isinstance(
-            by_conf,
-            pd.DataFrame
-        )
-        and not by_conf.empty
-    ):
-        st.dataframe(
-            by_conf,
-            hide_index=True,
-            use_container_width=True,
-        )
-    else:
-        # Mientras todavía no haya suficientes picks LIVE liquidados,
-        # mostramos el benchmark histórico del Ensemble V4.2 obtenido
-        # en el test final intacto. Es referencia de modelo, NO ROI real.
-        st.markdown(
-            _html_block(
-                """
-                <div style="
-                    margin:.1rem .9rem .65rem;
-                    padding:.65rem .8rem;
-                    border:1px solid rgba(38,170,232,.16);
-                    background:rgba(18,97,151,.10);
-                    border-radius:9px;
-                    color:#9fc6df;
-                    font-size:.69rem;
-                ">
-                    🧪 <b style="color:#dff5ff;">Benchmark histórico V4.2</b>
-                    · Test final intacto. Se sustituirá automáticamente por
-                    el Track Record real cuando haya suficientes picks liquidados.
-                    <span style="color:#6f8ca2;">No representa ROI real ni garantiza resultados futuros.</span>
-                </div>
-                """
+                opportunities
             ),
-            unsafe_allow_html=True,
         )
 
-        benchmark_conf = pd.DataFrame(
-            [
-                {
-                    "Nivel": "🟢 Fuerte ≥70%",
-                    "Acierto histórico": "78.27%",
-                    "Cobertura": "33.95%",
-                    "Picks test": "7,634",
-                },
-                {
-                    "Nivel": "🔥 Muy fuerte ≥75%",
-                    "Acierto histórico": "81.18%",
-                    "Cobertura": "20.96%",
-                    "Picks test": "4,713",
-                },
-                {
-                    "Nivel": "💎 Elite ≥80%",
-                    "Acierto histórico": "85.30%",
-                    "Cobertura": "11.07%",
-                    "Picks test": "2,489",
-                },
-            ]
-        )
-
-        st.dataframe(
-            benchmark_conf,
-            hide_index=True,
-            use_container_width=True,
-        )
-
-    st.markdown(
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.markdown(
-        _html_block(
-            """
-            <div class="tep-card" style="margin-top:.85rem;">
-              <div class="tep-section-subhead">
-                <h3>Picks recientes</h3>
-                <span class="tep-note">Últimos registros del tracker</span>
-              </div>
-            """
-        ),
-        unsafe_allow_html=True
-    )
-
-    if (
-        isinstance(
-            picks,
-            pd.DataFrame
-        )
-        and not picks.empty
-    ):
-        recent_cols = [
-            c
-            for c in [
-                "event_date",
-                "tournament",
-                "selection",
-                "prob_selection",
-                "odds",
-                "bookmaker",
-                "ev",
-                "market_quality",
-                "status",
-                "live_score",
-                "profit",
-            ]
-            if c in picks.columns
-        ]
-
-        recent = (
-            picks[
-                recent_cols
-            ]
-            .head(
-                8
-            )
-            .copy()
-        )
-
-        if "prob_selection" in recent.columns:
-            recent[
-                "prob_selection"
-            ] = pd.to_numeric(
-                recent[
-                    "prob_selection"
-                ],
-                errors="coerce"
-            ).map(
-                lambda x:
+        st.caption(
+            "Último análisis: "
+            + str(
+                payload.get(
+                    "scanned_at",
                     "-"
-                    if pd.isna(
-                        x
-                    )
-                    else f"{x:.1%}"
+                )
             )
-
-        if "ev" in recent.columns:
-            recent[
-                "ev"
-            ] = pd.to_numeric(
-                recent[
-                    "ev"
-                ],
-                errors="coerce"
-            ).map(
-                lambda x:
-                    "-"
-                    if pd.isna(
-                        x
-                    )
-                    else f"{x:+.1%}"
-            )
-
-        if "profit" in recent.columns:
-            recent[
-                "profit"
-            ] = pd.to_numeric(
-                recent[
-                    "profit"
-                ],
-                errors="coerce"
-            ).map(
-                lambda x:
-                    "-"
-                    if pd.isna(
-                        x
-                    )
-                    else f"{x:+.2f} u"
-            )
-
-        recent = recent.rename(
-            columns={
-                "event_date": "Fecha",
-                "tournament": "Torneo",
-                "selection": "Pick",
-                "prob_selection": "Probabilidad",
-                "odds": "Cuota",
-                "bookmaker": "Casa",
-                "ev": "EV",
-                "market_quality": "Mercado",
-                "status": "Resultado",
-                "live_score": "Marcador",
-                "profit": "Beneficio",
-            }
         )
 
-        st.dataframe(
-            recent,
-            hide_index=True,
-            use_container_width=True,
-        )
+        if opportunities:
+            st.markdown("#### 🔥 Mejores señales del último análisis")
+
+            for item in opportunities[:3]:
+                with st.container(border=True):
+                    a, b, c = st.columns(
+                        [2.2, 1, 1]
+                    )
+
+                    with a:
+                        st.markdown(
+                            f"**{item['category']} · "
+                            f"{item['selection']}**"
+                        )
+                        st.caption(
+                            f"{item['match']} · "
+                            f"{item['tournament']} · "
+                            f"{item['tour']}"
+                        )
+
+                    with b:
+                        st.metric(
+                            "Cuota",
+                            f"{item['odds']:.2f}",
+                        )
+
+                    with c:
+                        st.metric(
+                            "EV",
+                            f"{item['ev']:+.1%}",
+                        )
+        else:
+            st.info(
+                "El último Radar no encontró una oportunidad que "
+                "cumpliera los filtros de valor."
+            )
     else:
-        st.markdown(
-            '<div class="tep-empty">Todavía no hay picks registrados.</div>',
-            unsafe_allow_html=True,
+        st.info(
+            "Todavía no has lanzado el Radar. Pulsa "
+            "**ABRIR RADAR DE VALOR** para analizar ATP + Challenger."
         )
 
-    st.markdown(
-        '</div></div>',
-        unsafe_allow_html=True
-    )
 
 
 def render_performance_preview(track):
@@ -1638,8 +1058,10 @@ def load_data():
     return get_matches()
 
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=3600)
 def load_upcoming_matches():
+    # V14: una carga por hora como máximo mientras la caché siga viva.
+    # El Radar reutiliza este snapshot para no quemar la cuota diaria.
     return get_upcoming_matches()
 
 
@@ -2597,13 +2019,178 @@ def categoria_value_score(score):
     return "🟡 VALUE"
 
 
+
+# ============================================================
+# V14 · EVALUADOR DE VALUE SIN ESCRIBIR EN EL TRACKER
+# ============================================================
+def _evaluar_value_sin_guardar(
+    jugador_a,
+    jugador_b,
+    pa,
+    pb,
+    datos_cuotas,
+):
+    """
+    Misma filosofía conservadora de Top Picks, pero sin registrar
+    nada en betting_picks. El Radar debe analizar, no modificar
+    el track record.
+    """
+    if not datos_cuotas:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "SIN_MERCADO",
+        }
+
+    try:
+        cuota_a = float(datos_cuotas["cuota_a"])
+        cuota_b = float(datos_cuotas["cuota_b"])
+    except Exception:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "SIN_MERCADO",
+        }
+
+    candidates = [
+        {
+            "selection": jugador_a,
+            "prob": float(pa),
+            "odds": cuota_a,
+            "bookmaker": datos_cuotas.get("casa_a", ""),
+        },
+        {
+            "selection": jugador_b,
+            "prob": float(pb),
+            "odds": cuota_b,
+            "bookmaker": datos_cuotas.get("casa_b", ""),
+        },
+    ]
+
+    for item in candidates:
+        item["ev"] = (
+            item["prob"] * item["odds"]
+        ) - 1.0
+
+    raw_best = max(
+        candidates,
+        key=lambda item: item["ev"],
+    )
+
+    in_odds_range = [
+        item
+        for item in candidates
+        if 1.50 <= item["odds"] <= 3.00
+    ]
+
+    if not in_odds_range:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "CUOTA_FUERA_RANGO",
+            "candidate_selection": raw_best["selection"],
+            "candidate_probability": raw_best["prob"],
+            "candidate_odds": raw_best["odds"],
+            "candidate_ev": raw_best["ev"],
+        }
+
+    eligible_probability = [
+        item
+        for item in in_odds_range
+        if item["prob"] >= 0.60
+    ]
+
+    if not eligible_probability:
+        best_range = max(
+            in_odds_range,
+            key=lambda item: item["ev"],
+        )
+
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "PROB_SELECCION_BAJA",
+            "candidate_selection": best_range["selection"],
+            "candidate_probability": best_range["prob"],
+            "candidate_odds": best_range["odds"],
+            "candidate_ev": best_range["ev"],
+        }
+
+    best = max(
+        eligible_probability,
+        key=lambda item: item["ev"],
+    )
+
+    if best["ev"] < 0.05:
+        return {
+            "qualifies": False,
+            "inserted": False,
+            "label": "-",
+            "reason": "EV_INSUFICIENTE",
+            "candidate_selection": best["selection"],
+            "candidate_probability": best["prob"],
+            "candidate_odds": best["odds"],
+            "candidate_ev": best["ev"],
+        }
+
+    valid_books_raw = datos_cuotas.get(
+        "casas_validas",
+        None,
+    )
+
+    if valid_books_raw is not None:
+        try:
+            valid_books = int(
+                valid_books_raw
+                or 0
+            )
+        except Exception:
+            valid_books = 0
+
+        if valid_books < 2:
+            return {
+                "qualifies": False,
+                "inserted": False,
+                "label": "-",
+                "reason": "POCAS_CASAS",
+                "candidate_selection": best["selection"],
+                "candidate_probability": best["prob"],
+                "candidate_odds": best["odds"],
+                "candidate_ev": best["ev"],
+            }
+
+    return {
+        "qualifies": True,
+        "inserted": False,
+        "label": (
+            f"🔥 {best['selection']} "
+            f"@{best['odds']:.2f}"
+        ),
+        "reason": "TOP_PICK",
+        "selection": best["selection"],
+        "probability": best["prob"],
+        "odds": best["odds"],
+        "ev": best["ev"],
+        "bookmaker": best["bookmaker"],
+        "candidate_selection": best["selection"],
+        "candidate_probability": best["prob"],
+        "candidate_odds": best["odds"],
+        "candidate_ev": best["ev"],
+    }
+
+
 def generar_predicciones_proximos(
     df,
     partidos,
     indice_cuotas=None,
     recent_window=25,
     use_elo=True,
-    data_version=""
+    data_version="",
+    registrar_picks=True,
 ):
     filas = []
     no_resueltos = []
@@ -2729,16 +2316,25 @@ def generar_predicciones_proximos(
             ev_b = (pb * cuota_b) - 1
 
             if not partido_iniciado:
-                pick_auto = evaluar_pick_automatico(
-                    partido,
-                    jugador_a,
-                    jugador_b,
-                    pa,
-                    pb,
-                    datos_cuotas,
-                    prediccion,
-                    df
-                )
+                if registrar_picks:
+                    pick_auto = evaluar_pick_automatico(
+                        partido,
+                        jugador_a,
+                        jugador_b,
+                        pa,
+                        pb,
+                        datos_cuotas,
+                        prediccion,
+                        df
+                    )
+                else:
+                    pick_auto = _evaluar_value_sin_guardar(
+                        jugador_a,
+                        jugador_b,
+                        pa,
+                        pb,
+                        datos_cuotas,
+                    )
             else:
                 # Puede seguir mostrándose la cuota pre-match congelada,
                 # pero un partido ya iniciado NUNCA puede crear un pick nuevo.
@@ -2921,6 +2517,51 @@ def generar_predicciones_proximos(
                     )
                     if datos_cuotas
                     else "-"
+                ),
+
+                # V14 · campos numéricos para el Radar de Valor.
+                "_prob_a": pa,
+                "_prob_b": pb,
+                "_odds_a": cuota_a,
+                "_odds_b": cuota_b,
+                "_ev_a": ev_a,
+                "_ev_b": ev_b,
+                "_edge_a": (
+                    pa - (1.0 / cuota_a)
+                    if cuota_a
+                    else None
+                ),
+                "_edge_b": (
+                    pb - (1.0 / cuota_b)
+                    if cuota_b
+                    else None
+                ),
+                "_consensus_prob_a": (
+                    datos_cuotas.get("prob_consenso_a")
+                    if datos_cuotas
+                    else None
+                ),
+                "_consensus_prob_b": (
+                    datos_cuotas.get("prob_consenso_b")
+                    if datos_cuotas
+                    else None
+                ),
+                "_outliers_discarded": int(
+                    datos_cuotas.get(
+                        "outliers_descartados",
+                        0
+                    )
+                    or 0
+                ) if datos_cuotas else 0,
+                "_exchanges_discarded": int(
+                    datos_cuotas.get(
+                        "exchanges_descartados",
+                        0
+                    )
+                    or 0
+                ) if datos_cuotas else 0,
+                "_partido_iniciado": bool(
+                    partido_iniciado
                 ),
 
                 "_pick_qualifies": bool(
@@ -3825,6 +3466,1230 @@ def render_resultados_live_page(df):
     )
 
 
+
+# ============================================================
+# V14 · NAVEGACIÓN SIMPLE + RADAR DE VALOR
+# ============================================================
+def _navegar_a(destino):
+    st.session_state["tep_nav"] = destino
+    st.session_state["tep_nav_mobile_safe"] = destino
+    st.rerun()
+
+
+def _radar_quality_bonus(value):
+    return {
+        "Alta": 8.0,
+        "Media": 4.0,
+        "Baja": 0.0,
+    }.get(
+        str(value or "").strip(),
+        0.0,
+    )
+
+
+def _radar_build_rows(filas):
+    """
+    Crea dos listas:
+      - opportunities: apuestas/selecciones que merece la pena revisar.
+      - alerts: posibles desajustes o cuotas anómalas.
+
+    'Posible error' NO significa que la casa se haya equivocado:
+    es una señal para revisar cuando el modelo y el mercado discrepan
+    mucho, o cuando el sanitizador ha descartado una cuota atípica.
+    """
+    opportunities = []
+    alerts = []
+
+    for row in filas:
+        started = bool(
+            row.get(
+                "_partido_iniciado",
+                False,
+            )
+        )
+
+        if started:
+            continue
+
+        p1 = float(
+            row.get(
+                "_prob_a",
+                0.0,
+            )
+            or 0.0
+        )
+        p2 = float(
+            row.get(
+                "_prob_b",
+                0.0,
+            )
+            or 0.0
+        )
+
+        o1 = row.get(
+            "_odds_a"
+        )
+        o2 = row.get(
+            "_odds_b"
+        )
+
+        books = int(
+            row.get(
+                "_valid_bookmakers",
+                0,
+            )
+            or 0
+        )
+
+        quality = str(
+            row.get(
+                "_market_quality",
+                "N/D",
+            )
+            or "N/D"
+        )
+
+        outliers = int(
+            row.get(
+                "_outliers_discarded",
+                0,
+            )
+            or 0
+        )
+
+        match_name = (
+            f"{row.get('Jugador 1', '')} vs "
+            f"{row.get('Jugador 2', '')}"
+        )
+
+        if outliers > 0:
+            alerts.append(
+                {
+                    "type": "🛡️ Cuota atípica descartada",
+                    "severity": 3,
+                    "match": match_name,
+                    "tournament": row.get(
+                        "Torneo",
+                        "-"
+                    ),
+                    "detail": (
+                        f"El filtro de mercado descartó {outliers} "
+                        "cotización(es) fuera de rango. "
+                        "No se usan para calcular value."
+                    ),
+                }
+            )
+
+        sides = [
+            {
+                "selection": row.get(
+                    "Jugador 1",
+                    "-"
+                ),
+                "resolved_selection": row.get(
+                    "_player1_full",
+                    row.get(
+                        "Jugador 1",
+                        "-"
+                    ),
+                ),
+                "prob": p1,
+                "odds": o1,
+                "ev": row.get(
+                    "_ev_a"
+                ),
+                "edge": row.get(
+                    "_edge_a"
+                ),
+                "consensus_prob": row.get(
+                    "_consensus_prob_a"
+                ),
+                "bookmaker": row.get(
+                    "Casa J1",
+                    "-"
+                ),
+            },
+            {
+                "selection": row.get(
+                    "Jugador 2",
+                    "-"
+                ),
+                "resolved_selection": row.get(
+                    "_player2_full",
+                    row.get(
+                        "Jugador 2",
+                        "-"
+                    ),
+                ),
+                "prob": p2,
+                "odds": o2,
+                "ev": row.get(
+                    "_ev_b"
+                ),
+                "edge": row.get(
+                    "_edge_b"
+                ),
+                "consensus_prob": row.get(
+                    "_consensus_prob_b"
+                ),
+                "bookmaker": row.get(
+                    "Casa J2",
+                    "-"
+                ),
+            },
+        ]
+
+        for side in sides:
+            if (
+                side["odds"] is None
+                or side["ev"] is None
+                or side["edge"] is None
+            ):
+                continue
+
+            try:
+                odds = float(
+                    side["odds"]
+                )
+                ev = float(
+                    side["ev"]
+                )
+                edge = float(
+                    side["edge"]
+                )
+                prob = float(
+                    side["prob"]
+                )
+            except Exception:
+                continue
+
+            if odds <= 1.0:
+                continue
+
+            implied = (
+                1.0
+                / odds
+            )
+
+            validated = (
+                bool(
+                    row.get(
+                        "_pick_qualifies",
+                        False,
+                    )
+                )
+                and str(
+                    row.get(
+                        "_pick_selection",
+                        ""
+                    )
+                )
+                ==
+                str(
+                    side[
+                        "resolved_selection"
+                    ]
+                )
+            )
+
+            category = None
+
+            if validated:
+                category = (
+                    "🔥 VALUE VALIDADO"
+                )
+            elif (
+                prob >= 0.58
+                and ev >= 0.08
+                and edge >= 0.05
+                and books >= 2
+                and 1.35 <= odds <= 4.00
+            ):
+                category = (
+                    "🟢 VALOR POTENCIAL"
+                )
+            elif (
+                prob >= 0.55
+                and ev >= 0.04
+                and books >= 2
+                and 1.25 <= odds <= 5.00
+            ):
+                category = (
+                    "👀 PARA REVISAR"
+                )
+
+            if category:
+                score = (
+                    (
+                        1000.0
+                        if validated
+                        else 0.0
+                    )
+                    + max(
+                        ev,
+                        0.0
+                    )
+                    * 180.0
+                    + max(
+                        edge,
+                        0.0
+                    )
+                    * 120.0
+                    + prob
+                    * 22.0
+                    + min(
+                        books,
+                        8
+                    )
+                    * 1.5
+                    + _radar_quality_bonus(
+                        quality
+                    )
+                )
+
+                opportunities.append(
+                    {
+                        "category": category,
+                        "validated": validated,
+                        "score": score,
+                        "selection": side[
+                            "selection"
+                        ],
+                        "match": match_name,
+                        "tournament": row.get(
+                            "Torneo",
+                            "-"
+                        ),
+                        "tour": row.get(
+                            "Tour",
+                            "-"
+                        ),
+                        "surface": row.get(
+                            "Superficie",
+                            "-"
+                        ),
+                        "date": row.get(
+                            "Fecha",
+                            "-"
+                        ),
+                        "time": row.get(
+                            "Hora",
+                            "-"
+                        ),
+                        "prob": prob,
+                        "odds": odds,
+                        "bookmaker": side[
+                            "bookmaker"
+                        ],
+                        "implied": implied,
+                        "edge": edge,
+                        "ev": ev,
+                        "books": books,
+                        "quality": quality,
+                    }
+                )
+
+            if (
+                edge >= 0.10
+                and ev >= 0.10
+                and books >= 2
+            ):
+                severity = (
+                    2
+                    if edge >= 0.15
+                    or ev >= 0.25
+                    else 1
+                )
+
+                alerts.append(
+                    {
+                        "type": (
+                            "🚨 Desajuste fuerte modelo-mercado"
+                            if severity == 2
+                            else "⚠️ Desajuste modelo-mercado"
+                        ),
+                        "severity": severity,
+                        "match": match_name,
+                        "tournament": row.get(
+                            "Torneo",
+                            "-"
+                        ),
+                        "detail": (
+                            f"{side['selection']}: modelo {prob:.1%} "
+                            f"vs mercado implícito {implied:.1%} "
+                            f"({edge:+.1%} de diferencia). "
+                            f"Cuota {odds:.2f} · EV {ev:+.1%}."
+                        ),
+                    }
+                )
+
+            consensus_prob = side.get(
+                "consensus_prob"
+            )
+
+            try:
+                consensus_prob = float(
+                    consensus_prob
+                )
+            except Exception:
+                consensus_prob = None
+
+            if (
+                consensus_prob
+                and consensus_prob > 0
+                and books >= 3
+            ):
+                fair_consensus = (
+                    1.0
+                    / consensus_prob
+                )
+
+                price_gap = (
+                    odds
+                    / fair_consensus
+                ) - 1.0
+
+                if (
+                    price_gap >= 0.10
+                    and ev > 0
+                ):
+                    alerts.append(
+                        {
+                            "type": "💸 Mejor cuota muy por encima del consenso",
+                            "severity": 1,
+                            "match": match_name,
+                            "tournament": row.get(
+                                "Torneo",
+                                "-"
+                            ),
+                            "detail": (
+                                f"{side['selection']}: mejor cuota {odds:.2f} "
+                                f"frente a cuota justa de consenso "
+                                f"≈{fair_consensus:.2f}. "
+                                "Conviene comprobar que la línea siga disponible."
+                            ),
+                        }
+                    )
+
+    opportunities.sort(
+        key=lambda item: item[
+            "score"
+        ],
+        reverse=True,
+    )
+
+    alerts.sort(
+        key=lambda item: item[
+            "severity"
+        ],
+        reverse=True,
+    )
+
+    return (
+        opportunities,
+        alerts,
+    )
+
+
+def _run_value_radar(
+    df,
+    ventana,
+    usar_elo,
+    data_version,
+):
+    """
+    Una única pasada:
+      Live Tennis fixtures -> modelo V4.2 -> cuotas -> ranking.
+    No registra picks en betting_picks.
+    """
+    proximos = load_upcoming_matches()
+    odds_result = load_tennis_odds()
+
+    indice_cuotas = (
+        construir_indice_cuotas(
+            odds_result.get(
+                "events",
+                [],
+            )
+        )
+        if odds_result.get(
+            "ok"
+        )
+        else {}
+    )
+
+    filas, no_resueltos = (
+        generar_predicciones_proximos(
+            df,
+            proximos,
+            indice_cuotas,
+            recent_window=ventana,
+            use_elo=usar_elo,
+            data_version=data_version,
+            registrar_picks=False,
+        )
+    )
+
+    (
+        opportunities,
+        alerts,
+    ) = _radar_build_rows(
+        filas
+    )
+
+    market_count = sum(
+        1
+        for row in filas
+        if row.get(
+            "_market_available"
+        )
+    )
+
+    payload = {
+        "scanned_at": (
+            pd.Timestamp.now(
+                tz="Europe/Madrid"
+            ).strftime(
+                "%d/%m/%Y %H:%M"
+            )
+        ),
+        "fixtures_count": len(
+            proximos
+        ),
+        "predicted_count": len(
+            filas
+        ),
+        "market_count": int(
+            market_count
+        ),
+        "odds_events_count": len(
+            odds_result.get(
+                "events",
+                [],
+            )
+        ),
+        "odds_ok": bool(
+            odds_result.get(
+                "ok"
+            )
+        ),
+        "odds_message": str(
+            odds_result.get(
+                "message",
+                "",
+            )
+            or ""
+        ),
+        "requests_remaining": odds_result.get(
+            "requests_remaining"
+        ),
+        "filas": filas,
+        "no_resueltos": no_resueltos,
+        "opportunities": opportunities,
+        "alerts": alerts,
+    }
+
+    st.session_state[
+        "tep_radar_payload"
+    ] = payload
+
+    return payload
+
+
+def _render_opportunity_card(item):
+    with st.container(
+        border=True
+    ):
+        c1, c2, c3, c4 = st.columns(
+            [2.5, 1, 1, 1]
+        )
+
+        with c1:
+            st.markdown(
+                f"### {item['category']}"
+            )
+            st.markdown(
+                f"**{item['selection']}**"
+            )
+            st.caption(
+                f"{item['match']} · "
+                f"{item['tournament']} · "
+                f"{item['tour']} · "
+                f"{item['surface']}"
+            )
+            st.caption(
+                f"Casa: {item['bookmaker']} · "
+                f"{item['books']} casas válidas · "
+                f"mercado {item['quality']}"
+            )
+
+        with c2:
+            st.metric(
+                "Modelo",
+                f"{item['prob']:.1%}",
+            )
+
+        with c3:
+            st.metric(
+                "Cuota",
+                f"{item['odds']:.2f}",
+            )
+
+        with c4:
+            st.metric(
+                "EV",
+                f"{item['ev']:+.1%}",
+            )
+
+        st.progress(
+            min(
+                max(
+                    int(
+                        item[
+                            "prob"
+                        ]
+                        * 100
+                    ),
+                    0,
+                ),
+                100,
+            )
+        )
+
+        st.caption(
+            "💡 El mercado implica "
+            f"{item['implied']:.1%}; "
+            "el modelo estima "
+            f"{item['prob']:.1%}. "
+            "Diferencia: "
+            f"{item['edge']:+.1%}."
+        )
+
+
+def _build_jornada_table(
+    filas,
+):
+    rows = []
+
+    for row in filas:
+        p1 = float(
+            row.get(
+                "_prob_a",
+                0.0,
+            )
+            or 0.0
+        )
+        p2 = float(
+            row.get(
+                "_prob_b",
+                0.0,
+            )
+            or 0.0
+        )
+
+        ev1 = row.get(
+            "_ev_a"
+        )
+        ev2 = row.get(
+            "_ev_b"
+        )
+
+        best_signal = "-"
+        best_ev = None
+
+        candidates = []
+
+        if ev1 is not None:
+            candidates.append(
+                (
+                    row.get(
+                        "Jugador 1",
+                        "-"
+                    ),
+                    float(
+                        ev1
+                    ),
+                )
+            )
+
+        if ev2 is not None:
+            candidates.append(
+                (
+                    row.get(
+                        "Jugador 2",
+                        "-"
+                    ),
+                    float(
+                        ev2
+                    ),
+                )
+            )
+
+        if candidates:
+            best_name, best_ev = max(
+                candidates,
+                key=lambda item: item[
+                    1
+                ],
+            )
+
+            if bool(
+                row.get(
+                    "_pick_qualifies",
+                    False,
+                )
+            ):
+                best_signal = (
+                    f"🔥 {best_name} "
+                    f"({best_ev:+.1%})"
+                )
+            elif (
+                best_ev >= 0.08
+            ):
+                best_signal = (
+                    f"🟢 {best_name} "
+                    f"({best_ev:+.1%})"
+                )
+            elif (
+                best_ev > 0
+            ):
+                best_signal = (
+                    f"👀 {best_name} "
+                    f"({best_ev:+.1%})"
+                )
+
+        favorito = (
+            row.get(
+                "Jugador 1",
+                "-"
+            )
+            if p1 >= p2
+            else row.get(
+                "Jugador 2",
+                "-"
+            )
+        )
+
+        prob_fav = max(
+            p1,
+            p2,
+        )
+
+        rows.append(
+            {
+                "Fecha": row.get(
+                    "Fecha",
+                    "-"
+                ),
+                "Hora": row.get(
+                    "Hora",
+                    "-"
+                ),
+                "Tour": row.get(
+                    "Tour",
+                    "-"
+                ),
+                "Torneo": row.get(
+                    "Torneo",
+                    "-"
+                ),
+                "Partido": (
+                    f"{row.get('Jugador 1', '')} vs "
+                    f"{row.get('Jugador 2', '')}"
+                ),
+                "Favorito modelo": favorito,
+                "Prob. favorito": (
+                    f"{prob_fav:.1%}"
+                ),
+                "Mejor señal": best_signal,
+                "Mercado": (
+                    "✅"
+                    if row.get(
+                        "_market_available"
+                    )
+                    else "—"
+                ),
+            }
+        )
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+def render_value_radar_page(
+    df,
+    ventana,
+    usar_elo,
+    data_version,
+):
+    st.markdown(
+        """
+        <div style="
+            padding:1.1rem 1.2rem;
+            border-radius:16px;
+            border:1px solid rgba(255,183,77,.18);
+            background:linear-gradient(135deg,rgba(35,25,12,.86),rgba(12,24,34,.96));
+            margin-bottom:.8rem;
+        ">
+          <div style="font-size:.75rem;color:#ffc56b;font-weight:800;letter-spacing:.08em;">
+            RADAR DE VALOR
+          </div>
+          <div style="font-size:1.8rem;font-weight:900;color:#f6fbff;">
+            Encuentra las mejores cuotas sin rebuscar
+          </div>
+          <div style="color:#9db0bf;margin-top:.3rem;">
+            Analiza de una vez todos los próximos partidos ATP + Challenger,
+            cruza probabilidades con cuotas y separa oportunidades de alertas.
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    b1, b2 = st.columns(
+        [2, 1]
+    )
+
+    with b1:
+        run_clicked = st.button(
+            "🔥 ANALIZAR TODA LA JORNADA",
+            type="primary",
+            width="stretch",
+            key="run_value_radar",
+        )
+
+    with b2:
+        if st.button(
+            "🧹 Limpiar resultados",
+            width="stretch",
+            key="clear_value_radar",
+        ):
+            st.session_state.pop(
+                "tep_radar_payload",
+                None,
+            )
+            st.rerun()
+
+    if run_clicked:
+        try:
+            with st.spinner(
+                "Analizando ATP + Challenger, cruzando cuotas y buscando value..."
+            ):
+                _run_value_radar(
+                    df,
+                    ventana,
+                    usar_elo,
+                    data_version,
+                )
+        except Exception as exc:
+            st.error(
+                "No se pudo completar el Radar."
+            )
+            st.caption(
+                str(
+                    exc
+                )
+            )
+
+    payload = st.session_state.get(
+        "tep_radar_payload"
+    )
+
+    if not payload:
+        st.info(
+            "Pulsa **ANALIZAR TODA LA JORNADA**. "
+            "La app hará una sola pasada y te mostrará primero "
+            "lo importante."
+        )
+        return
+
+    k1, k2, k3, k4 = st.columns(4)
+
+    k1.metric(
+        "Partidos encontrados",
+        payload.get(
+            "fixtures_count",
+            0,
+        ),
+    )
+    k2.metric(
+        "Analizados",
+        payload.get(
+            "predicted_count",
+            0,
+        ),
+    )
+    k3.metric(
+        "Con cuotas",
+        payload.get(
+            "market_count",
+            0,
+        ),
+    )
+    k4.metric(
+        "Señales de valor",
+        len(
+            payload.get(
+                "opportunities",
+                [],
+            )
+        ),
+    )
+
+    st.caption(
+        "Último Radar: "
+        + str(
+            payload.get(
+                "scanned_at",
+                "-"
+            )
+        )
+        + " · La caché de fixtures/cuotas se reutiliza durante 1 hora."
+    )
+
+    if not payload.get(
+        "odds_ok"
+    ):
+        st.warning(
+            "Las predicciones están disponibles, pero las cuotas "
+            "automáticas no respondieron correctamente en este Radar."
+        )
+
+        if payload.get(
+            "odds_message"
+        ):
+            st.caption(
+                payload[
+                    "odds_message"
+                ]
+            )
+
+    tabs = st.tabs(
+        [
+            "🔥 Mejores apuestas",
+            "⚠️ Posibles errores de cuota",
+            "📅 Toda la jornada",
+            "🧩 Fallos de datos",
+        ]
+    )
+
+    opportunities = payload.get(
+        "opportunities",
+        [],
+    )
+
+    alerts = payload.get(
+        "alerts",
+        [],
+    )
+
+    with tabs[0]:
+        st.caption(
+            "Primero aparecen las selecciones que cumplen los filtros "
+            "estrictos. Después, oportunidades que merece la pena revisar."
+        )
+
+        if not opportunities:
+            st.info(
+                "No hay value suficiente con los filtros actuales."
+            )
+        else:
+            validated_count = sum(
+                1
+                for item in opportunities
+                if item.get(
+                    "validated"
+                )
+            )
+
+            v1, v2 = st.columns(2)
+
+            v1.metric(
+                "Value validado",
+                validated_count,
+            )
+            v2.metric(
+                "Para revisar",
+                max(
+                    len(
+                        opportunities
+                    )
+                    - validated_count,
+                    0,
+                ),
+            )
+
+            for item in opportunities[:10]:
+                _render_opportunity_card(
+                    item
+                )
+
+    with tabs[1]:
+        st.warning(
+            "Una alerta de 'posible error' no significa que la casa "
+            "se haya equivocado. Señala una discrepancia grande o una "
+            "cotización atípica para comprobar antes de apostar."
+        )
+
+        if not alerts:
+            st.success(
+                "No se han detectado desajustes relevantes en los mercados disponibles."
+            )
+        else:
+            for alert in alerts[:20]:
+                with st.container(
+                    border=True
+                ):
+                    st.markdown(
+                        f"### {alert['type']}"
+                    )
+                    st.write(
+                        f"**{alert['match']}**"
+                    )
+                    st.caption(
+                        str(
+                            alert.get(
+                                "tournament",
+                                "-"
+                            )
+                        )
+                    )
+                    st.write(
+                        alert[
+                            "detail"
+                        ]
+                    )
+
+    with tabs[2]:
+        jornada = _build_jornada_table(
+            payload.get(
+                "filas",
+                [],
+            )
+        )
+
+        if jornada.empty:
+            st.info(
+                "No hay partidos analizados para mostrar."
+            )
+        else:
+            f1, f2 = st.columns(2)
+
+            with f1:
+                tour_filter = st.selectbox(
+                    "Tour",
+                    [
+                        "Todos",
+                        "ATP",
+                        "CHALLENGER",
+                    ],
+                    key="radar_tour_filter",
+                )
+
+            with f2:
+                only_market = st.checkbox(
+                    "Sólo partidos con cuotas",
+                    value=False,
+                    key="radar_only_market",
+                )
+
+            view = jornada.copy()
+
+            if (
+                tour_filter
+                != "Todos"
+            ):
+                view = view[
+                    view[
+                        "Tour"
+                    ]
+                    ==
+                    tour_filter
+                ]
+
+            if only_market:
+                view = view[
+                    view[
+                        "Mercado"
+                    ]
+                    ==
+                    "✅"
+                ]
+
+            st.dataframe(
+                view,
+                hide_index=True,
+                width="stretch",
+            )
+
+    with tabs[3]:
+        no_resueltos = payload.get(
+            "no_resueltos",
+            [],
+        )
+
+        if not no_resueltos:
+            st.success(
+                "El modelo pudo resolver todos los partidos recibidos."
+            )
+        else:
+            st.write(
+                f"Hay **{len(no_resueltos)}** partido(s) que no se "
+                "pudieron cruzar correctamente."
+            )
+
+            st.dataframe(
+                pd.DataFrame(
+                    no_resueltos
+                ).rename(
+                    columns={
+                        "partido": "Partido",
+                        "motivo": "Qué ha fallado",
+                    }
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+
+
+def render_jornada_simple_page(
+    df,
+    ventana,
+    usar_elo,
+    data_version,
+):
+    st.markdown(
+        '<div class="tep-section-title">📅 Jornada ATP + Challenger</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Vista simple de todos los partidos. "
+        "El Radar hace el análisis y esta pantalla te lo ordena."
+    )
+
+    payload = st.session_state.get(
+        "tep_radar_payload"
+    )
+
+    if not payload:
+        st.info(
+            "Primero necesitamos analizar la jornada."
+        )
+
+        if st.button(
+            "🔥 ANALIZAR JORNADA AHORA",
+            type="primary",
+            width="stretch",
+            key="jornada_run_radar",
+        ):
+            try:
+                with st.spinner(
+                    "Preparando jornada..."
+                ):
+                    _run_value_radar(
+                        df,
+                        ventana,
+                        usar_elo,
+                        data_version,
+                    )
+                st.rerun()
+            except Exception as exc:
+                st.error(
+                    "No se pudo analizar la jornada."
+                )
+                st.caption(
+                    str(
+                        exc
+                    )
+                )
+
+        return
+
+    jornada = _build_jornada_table(
+        payload.get(
+            "filas",
+            [],
+        )
+    )
+
+    a, b, c = st.columns(3)
+
+    a.metric(
+        "Partidos",
+        len(
+            jornada
+        ),
+    )
+    b.metric(
+        "Con cuotas",
+        int(
+            (
+                jornada[
+                    "Mercado"
+                ]
+                ==
+                "✅"
+            ).sum()
+        )
+        if not jornada.empty
+        else 0,
+    )
+    c.metric(
+        "Señales de valor",
+        len(
+            payload.get(
+                "opportunities",
+                [],
+            )
+        ),
+    )
+
+    if jornada.empty:
+        st.info(
+            "No hay partidos disponibles."
+        )
+        return
+
+    tour_filter = st.selectbox(
+        "Mostrar",
+        [
+            "Todos",
+            "ATP",
+            "CHALLENGER",
+        ],
+        key="simple_jornada_tour",
+    )
+
+    view = jornada.copy()
+
+    if tour_filter != "Todos":
+        view = view[
+            view[
+                "Tour"
+            ]
+            ==
+            tour_filter
+        ]
+
+    st.dataframe(
+        view,
+        hide_index=True,
+        width="stretch",
+    )
+
+    if st.button(
+        "🔥 IR AL RADAR DE VALOR",
+        type="primary",
+        width="stretch",
+        key="jornada_go_radar",
+    ):
+        _navegar_a(
+            "🔥  Radar de Valor"
+        )
+
+
+
 # =========================================================
 # V13.5.2 · NAVEGACIÓN SEGURA
 # El sidebar sigue existiendo, pero además tenemos un selector
@@ -3832,16 +4697,17 @@ def render_resultados_live_page(df):
 # el botón nativo de Streamlit.
 # =========================================================
 NAV_OPTIONS = [
-    "⌂  Dashboard",
-    "▣  Próximos partidos",
+    "⌂  Inicio",
+    "🔥  Radar de Valor",
+    "📅  Jornada",
     "◈  Modelo / Analizador",
 ]
 
 if "tep_nav" not in st.session_state:
     st.session_state["tep_nav"] = NAV_OPTIONS[0]
 
-# V13.5.11: si el navegador conserva una página antigua
-# (Top Picks / Rendimiento / Resultados live), volvemos al Dashboard.
+# V14: si el navegador conserva una página antigua,
+# volvemos a Inicio.
 if st.session_state.get("tep_nav") not in NAV_OPTIONS:
     st.session_state["tep_nav"] = NAV_OPTIONS[0]
 
@@ -3914,38 +4780,22 @@ with st.sidebar:
         st.success(msg)
 
     superficie = st.selectbox(
-        "Superficie del partido",
+        "Superficie · análisis individual",
         ["Hard", "Clay", "Grass", "Todas"]
     )
 
     ventana = 25
     usar_elo = True
 
-    st.caption(
-        "🧠 Ensemble V4.2: ventana fija de 25 partidos "
-        "y Elo general + Elo por superficie."
-    )
-
-    st.caption(
-        "El modelo de producción se mantiene fijo. "
-        "El reentrenamiento se hace fuera de la app "
-        "con el optimizador V4.2."
-    )
-
     estado_v42 = get_v42_status()
 
     if estado_v42.get("ok"):
         st.success(
-            "✅ Ensemble V4.2 activo"
-        )
-        st.caption(
-            f"{estado_v42.get('alpha_v42', 0):.0%} V4.2 + "
-            f"{estado_v42.get('alpha_v1', 0):.0%} V1 · "
-            f"{estado_v42.get('features', 0)} features"
+            "✅ Modelo listo"
         )
     else:
         st.warning(
-            "⚠️ V4.2 no encontrado: usando V1 de respaldo."
+            "⚠️ Modelo principal no disponible · usando respaldo"
         )
 
 
@@ -3980,7 +4830,7 @@ track_dashboard = get_track_record()
 estado_v42_dashboard = get_v42_status()
 last_dashboard = get_last_update() or "Sin actualizar"
 
-if pagina_actual == "⌂  Dashboard":
+if pagina_actual == "⌂  Inicio":
     render_dashboard_premium_v13(
         df,
         estado_v42_dashboard,
@@ -5447,11 +6297,20 @@ def render_proximos_partidos(df, ventana, usar_elo):
 
 
 
-if pagina_actual == "▣  Próximos partidos":
-    render_proximos_partidos(
+if pagina_actual == "🔥  Radar de Valor":
+    render_value_radar_page(
         df,
         ventana,
-        usar_elo
+        usar_elo,
+        data_version,
+    )
+
+elif pagina_actual == "📅  Jornada":
+    render_jornada_simple_page(
+        df,
+        ventana,
+        usar_elo,
+        data_version,
     )
 
 
