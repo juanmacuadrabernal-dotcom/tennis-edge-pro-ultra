@@ -1,4 +1,4 @@
-# BUILD: V14.0 · RADAR DE VALOR · UI SIMPLE · ANALIZADOR INTACTO
+# BUILD: V14.2.2 · RADAR FAST · JORNADA HOY+MAÑANA · ANALIZADOR INTACTO
 import os
 import html
 import textwrap
@@ -3746,6 +3746,182 @@ def _radar_build_rows(filas):
 
 
 
+
+def _filtrar_partidos_jornada(partidos, dias=2):
+    """
+    El endpoint /fixtures puede devolver hasta 200 ATP + 200 Challenger.
+    Para el Radar no tiene sentido modelar cientos de partidos lejanos.
+
+    Analizamos:
+      - hoy
+      - mañana
+
+    Si por alguna razón las fechas vienen vacías o desplazadas,
+    usamos como fallback los primeros 80 fixtures ordenados.
+    """
+    if not partidos:
+        return []
+
+    hoy = pd.Timestamp.now(
+        tz="Europe/Madrid"
+    ).date()
+
+    fin = (
+        pd.Timestamp(hoy)
+        + pd.Timedelta(days=max(int(dias) - 1, 0))
+    ).date()
+
+    valid_status = {
+        "",
+        "scheduled",
+        "upcoming",
+        "not_started",
+        "not started",
+        "delayed",
+        "postponed",
+    }
+
+    filtrados = []
+
+    for partido in partidos:
+        status = str(
+            partido.get("status", "")
+            or ""
+        ).strip().lower()
+
+        # No metemos partidos que el feed ya marca claramente terminados.
+        if status in {
+            "finished",
+            "completed",
+            "ended",
+            "cancelled",
+            "canceled",
+            "retired",
+            "walkover",
+        }:
+            continue
+
+        raw_date = str(
+            partido.get("event_date", "")
+            or ""
+        ).strip()
+
+        try:
+            fecha = pd.to_datetime(
+                raw_date,
+                errors="raise",
+            ).date()
+        except Exception:
+            continue
+
+        if hoy <= fecha <= fin:
+            filtrados.append(partido)
+
+    if filtrados:
+        return filtrados
+
+    # Fallback conservador para no dejar el Radar vacío por un problema de fecha.
+    return list(partidos[:80])
+
+
+def _generar_predicciones_con_progreso(
+    df,
+    partidos,
+    indice_cuotas,
+    recent_window,
+    use_elo,
+    data_version,
+):
+    """
+    Procesa la jornada por bloques para que Streamlit muestre
+    avance real y no parezca bloqueado.
+    """
+    total = len(partidos)
+
+    if total == 0:
+        return [], []
+
+    filas_total = []
+    no_resueltos_total = []
+
+    progress = st.progress(
+        0,
+        text=f"Preparando {total} partidos..."
+    )
+
+    status_box = st.empty()
+
+    chunk_size = 8
+
+    for start in range(
+        0,
+        total,
+        chunk_size,
+    ):
+        chunk = partidos[
+            start:
+            start + chunk_size
+        ]
+
+        end = min(
+            start + len(chunk),
+            total,
+        )
+
+        status_box.caption(
+            f"🧠 Analizando partidos {start + 1}-{end} de {total}..."
+        )
+
+        filas_chunk, no_chunk = (
+            generar_predicciones_proximos(
+                df,
+                chunk,
+                indice_cuotas,
+                recent_window=recent_window,
+                use_elo=use_elo,
+                data_version=data_version,
+                registrar_picks=False,
+            )
+        )
+
+        filas_total.extend(
+            filas_chunk
+        )
+
+        no_resueltos_total.extend(
+            no_chunk
+        )
+
+        pct = int(
+            round(
+                end
+                / total
+                * 100
+            )
+        )
+
+        progress.progress(
+            min(
+                max(
+                    pct,
+                    0
+                ),
+                100
+            ),
+            text=(
+                f"Analizados {end}/{total} partidos"
+            ),
+        )
+
+    progress.empty()
+    status_box.empty()
+
+    return (
+        filas_total,
+        no_resueltos_total,
+    )
+
+
 def _run_value_radar(
     df,
     ventana,
@@ -3753,11 +3929,32 @@ def _run_value_radar(
     data_version,
 ):
     """
-    Una única pasada:
-      Live Tennis fixtures -> modelo V4.2 -> cuotas -> ranking.
-    No registra picks en betting_picks.
+    V14.2.2 · Radar rápido.
+
+    1. Carga fixtures.
+    2. Se queda sólo con hoy + mañana.
+    3. Carga cuotas una sola vez.
+    4. Analiza por bloques mostrando progreso.
+    5. Guarda un snapshot compartido para Radar + Jornada + Inicio.
     """
-    proximos = load_upcoming_matches()
+    stage = st.empty()
+
+    stage.info(
+        "📅 1/3 · Cargando ATP + Challenger..."
+    )
+
+    proximos_raw = load_upcoming_matches()
+
+    proximos = _filtrar_partidos_jornada(
+        proximos_raw,
+        dias=2,
+    )
+
+    stage.info(
+        f"💰 2/3 · {len(proximos)} partidos de hoy/mañana. "
+        "Cargando cuotas..."
+    )
+
     odds_result = load_tennis_odds()
 
     indice_cuotas = (
@@ -3773,15 +3970,18 @@ def _run_value_radar(
         else {}
     )
 
+    stage.info(
+        f"🧠 3/3 · Analizando {len(proximos)} partidos con V4.2..."
+    )
+
     filas, no_resueltos = (
-        generar_predicciones_proximos(
+        _generar_predicciones_con_progreso(
             df,
             proximos,
             indice_cuotas,
             recent_window=ventana,
             use_elo=usar_elo,
             data_version=data_version,
-            registrar_picks=False,
         )
     )
 
@@ -3808,9 +4008,13 @@ def _run_value_radar(
                 "%d/%m/%Y %H:%M"
             )
         ),
+        "raw_fixtures_count": len(
+            proximos_raw
+        ),
         "fixtures_count": len(
             proximos
         ),
+        "scope": "Hoy + mañana",
         "predicted_count": len(
             filas
         ),
@@ -3847,6 +4051,12 @@ def _run_value_radar(
     st.session_state[
         "tep_radar_payload"
     ] = payload
+
+    stage.success(
+        f"✅ Radar completado: {len(filas)} predicciones · "
+        f"{market_count} con cuotas · "
+        f"{len(opportunities)} con EV positivo."
+    )
 
     return payload
 
@@ -4220,7 +4430,10 @@ def render_value_radar_page(
     k4.metric("EV positivo", len(opportunities))
 
     st.caption(
-        f"Eventos recibidos por Odds API: {payload.get('odds_events_count', 0)} · "
+        f"Jornada analizada: {payload.get('scope', 'Hoy + mañana')} · "
+        f"Fixtures API totales: {payload.get('raw_fixtures_count', payload.get('fixtures_count', 0))} · "
+        f"Partidos procesados: {payload.get('fixtures_count', 0)} · "
+        f"Eventos Odds API: {payload.get('odds_events_count', 0)} · "
         f"Value estricto: {strict_count} · "
         f"Último análisis: {payload.get('scanned_at', '-')}"
     )
