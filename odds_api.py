@@ -1,5 +1,5 @@
 """
-Tennis Edge Pro · Odds Engine V9 CHALLENGER ALL BOOKS One-Book-Per-Request
+Tennis Edge Pro · Odds Engine V9 CHALLENGER DIRECT FIX One-Book-Per-Request
 
 Proveedor principal:
 - The Odds API
@@ -371,71 +371,32 @@ def _oddspapi_params(extra=None):
 
 
 def _oddspapi_list_payload(payload):
-    """
-    Normaliza respuestas de OddsPapi.
-
-    La API puede devolver:
-    - lista de fixtures
-    - un fixture único
-    - dict contenedor (data/events/fixtures/...)
-    - dict indexado por fixtureId
-    """
     if isinstance(payload, list):
-        return [
-            item
-            for item in payload
-            if isinstance(item, dict)
-        ]
+        return payload
 
-    if not isinstance(payload, dict):
-        return []
+    if isinstance(payload, dict):
+        if payload.get("fixtureId"):
+            return [payload]
 
-    if payload.get("fixtureId"):
-        return [payload]
+        for key in (
+            "data",
+            "events",
+            "fixtures",
+            "items",
+            "results",
+        ):
+            value = payload.get(key)
 
-    for key in (
-        "data",
-        "events",
-        "fixtures",
-        "items",
-        "results",
-    ):
-        value = payload.get(key)
+            if isinstance(value, list):
+                return value
 
-        if isinstance(value, list):
-            return [
-                item
-                for item in value
-                if isinstance(item, dict)
-            ]
-
-        if isinstance(value, dict):
-            if value.get("fixtureId"):
+            if (
+                isinstance(value, dict)
+                and value.get("fixtureId")
+            ):
                 return [value]
 
-            mapped = [
-                item
-                for item in value.values()
-                if (
-                    isinstance(item, dict)
-                    and item.get("fixtureId")
-                )
-            ]
-
-            if mapped:
-                return mapped
-
-    # Último fallback: dict directamente indexado por IDs.
-    mapped = [
-        item
-        for item in payload.values()
-        if (
-            isinstance(item, dict)
-            and item.get("fixtureId")
-        )
-    ]
-
-    return mapped
+    return []
 
 
 def _oddspapi_get(path, params=None, timeout=25):
@@ -761,22 +722,19 @@ def _merge_oddspapi_raw_events(target, incoming):
 
 def _get_oddspapi_odds():
     """
-    V9 · Cobertura Challenger robusta.
+    V9 · OddsPapi directo y tolerante a fallos.
 
-    Problema corregido:
-    V8 podía filtrar /fixtures por una única casa.
-    Si esa casa no tenía precio para un Challenger, el partido ni siquiera
-    entraba en el pipeline aunque otras casas sí tuvieran cuota.
+    Cambio clave:
+    - NO dependemos de /account para decidir bookmakers.
+    - /fixtures obtiene TODO el tenis pre-match con odds.
+    - /odds-by-tournaments se consulta por bookmaker.
+    - Soportamos tanto `bookmaker` como `bookmakers` porque
+      la documentación actual muestra ambas variantes.
+    - Si una casa falla, seguimos con la siguiente.
+    - Se trocean tournamentIds para evitar URLs gigantes.
 
-    Flujo V9:
-    1) /account -> valida Tennis y obtiene casas permitidas.
-    2) /fixtures -> tenis pre-match con hasOdds=true, SIN filtrar por bookmaker.
-       Así descubrimos cualquier Challenger que tenga precio en alguna casa.
-    3) /odds-by-tournaments -> primero SIN bookmakers para pedir todas las
-       casas disponibles de una vez.
-    4) Si ese modo falla, fallback: una llamada por bookmaker permitido,
-       máximo 3, porque algunas configuraciones antiguas del backend exigían
-       exactamente una casa.
+    Prioridad:
+      bet365.es -> bet365 -> pinnacle
     """
     if not ODDSPAPI_API_KEY:
         return {
@@ -787,46 +745,31 @@ def _get_oddspapi_odds():
             "tournaments": 0,
             "account": {},
             "bookmakers_used": [],
-            "mode": "disabled",
+            "attempts": [],
         }
 
+    attempts = []
+
     try:
-        account = _oddspapi_account()
-
-        account_books = [
-            str(x).strip()
-            for x in account.get(
-                "bookmakers",
-                []
-            )
-            if str(x).strip()
-        ]
-
         now = datetime.now(
             timezone.utc
         )
 
-        # <48h para cumplir la restricción del endpoint cuando usamos
-        # sólo sportId + from/to.
         date_from = (
-            now
-            - timedelta(minutes=30)
-        ).isoformat().replace(
-            "+00:00",
-            "Z",
+            now - timedelta(hours=2)
+        ).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
         )
 
         date_to = (
-            now
-            + timedelta(hours=47)
-        ).isoformat().replace(
-            "+00:00",
-            "Z",
+            now + timedelta(hours=46)
+        ).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
         )
 
-        # CLAVE DEL FIX:
-        # no pasamos bookmakers. hasOdds=true significa "tiene odds
-        # en alguna casa disponible", no sólo en una casa concreta.
+        # IMPORTANTE:
+        # No filtramos fixtures por una sola casa.
+        # Así no excluimos Challengers que tenga bet365 pero no otra.
         fixture_params = {
             "sportId": TENNIS_SPORT_ID,
             "from": date_from,
@@ -901,6 +844,10 @@ def _get_oddspapi_odds():
                     "tournamentName",
                     "",
                 ),
+                "categoryName": fixture.get(
+                    "categoryName",
+                    "",
+                ),
                 "startTime": fixture.get(
                     "startTime"
                 ),
@@ -913,8 +860,7 @@ def _get_oddspapi_odds():
                         "tournamentId"
                     ]
                 )
-                for item
-                in fixture_map.values()
+                for item in fixture_map.values()
             }
         )
 
@@ -923,137 +869,153 @@ def _get_oddspapi_odds():
                 "ok": True,
                 "events": [],
                 "message": (
-                    "OddsPapi no devolvió fixtures pre-match con odds "
-                    "en la ventana de 47h."
+                    "OddsPapi no devolvió fixtures de tenis "
+                    "pre-match con cuotas en la ventana actual."
                 ),
                 "fixtures": 0,
                 "tournaments": 0,
-                "account": account,
+                "account": {},
                 "bookmakers_used": [],
-                "mode": "all-books",
+                "attempts": attempts,
             }
 
-        tournament_csv = ",".join(
-            tournament_ids
-        )
+        secret_books = [
+            x.strip()
+            for x in str(
+                ODDSPAPI_BOOKMAKERS
+                or ""
+            ).split(",")
+            if x.strip()
+        ]
 
-        merged_raw = {}
-        mode = "all-books"
-        warning = ""
+        preferred_books = []
 
-        # ---------------------------------------------------------
-        # Intento principal:
-        # sin bookmakers -> OddsPapi devuelve todas las casas
-        # disponibles para la suscripción.
-        # ---------------------------------------------------------
-        try:
-            odds_payload = _oddspapi_get(
-                "odds-by-tournaments",
-                params={
-                    "tournamentIds": tournament_csv,
-                    "language": "en",
-                    "verbosity": 3,
-                    "oddsFormat": "decimal",
-                },
-                timeout=60,
-            )
-
-            odds_rows = _oddspapi_list_payload(
-                odds_payload
-            )
-
-            _merge_oddspapi_raw_events(
-                merged_raw,
-                odds_rows,
-            )
-
-        except Exception as exc_all:
-            # -----------------------------------------------------
-            # Fallback compatible con instalaciones/backend que
-            # exigen exactamente 1 bookmaker por petición.
-            # -----------------------------------------------------
-            mode = "one-book-fallback"
-
-            preferred = [
+        for book in (
+            secret_books
+            + [
                 "bet365.es",
                 "bet365",
                 "pinnacle",
             ]
-
-            fallback_books = []
-
-            for book in preferred:
-                if (
-                    book in account_books
-                    and book
-                    not in fallback_books
-                ):
-                    fallback_books.append(
-                        book
-                    )
-
-            for book in account_books:
-                if len(
-                    fallback_books
-                ) >= 3:
-                    break
-
-                if book not in fallback_books:
-                    fallback_books.append(
-                        book
-                    )
-
-            fallback_books = fallback_books[:3]
-
-            if not fallback_books:
-                raise RuntimeError(
-                    "OddsPapi no permite el modo all-books y "
-                    "la cuenta no devuelve bookmakers para fallback. "
-                    f"Error original: {exc_all}"
+        ):
+            if (
+                book
+                and book not in preferred_books
+            ):
+                preferred_books.append(
+                    book
                 )
 
-            for bookmaker in fallback_books:
-                try:
-                    odds_payload = _oddspapi_get(
-                        "odds-by-tournaments",
-                        params={
-                            "tournamentIds": tournament_csv,
-                            "bookmakers": bookmaker,
-                            "language": "en",
-                            "verbosity": 3,
-                            "oddsFormat": "decimal",
-                        },
-                        timeout=45,
-                    )
+        # Protegemos cuota: como máximo 3 casas.
+        preferred_books = (
+            preferred_books[:3]
+        )
 
-                    odds_rows = _oddspapi_list_payload(
+        merged_raw = {}
+        successful_books = []
+
+        # Evitamos URLs enormes si hay muchísimos torneos.
+        chunk_size = 35
+
+        for bookmaker in preferred_books:
+            book_had_success = False
+
+            for chunk_start in range(
+                0,
+                len(tournament_ids),
+                chunk_size,
+            ):
+                chunk = tournament_ids[
+                    chunk_start:
+                    chunk_start + chunk_size
+                ]
+
+                common = {
+                    "tournamentIds": ",".join(
+                        chunk
+                    ),
+                    "language": "en",
+                    "verbosity": 3,
+                    "oddsFormat": "decimal",
+                }
+
+                odds_payload = None
+                last_error = None
+
+                # La documentación de OddsPapi actualmente muestra
+                # ejemplos con `bookmaker=...`, aunque otras páginas
+                # describen `bookmakers`. Probamos ambos sin abortar.
+                for param_name in (
+                    "bookmaker",
+                    "bookmakers",
+                ):
+                    params = dict(
+                        common
+                    )
+                    params[
+                        param_name
+                    ] = bookmaker
+
+                    try:
+                        odds_payload = (
+                            _oddspapi_get(
+                                "odds-by-tournaments",
+                                params=params,
+                                timeout=45,
+                            )
+                        )
+
+                        attempts.append(
+                            {
+                                "bookmaker": bookmaker,
+                                "parameter": param_name,
+                                "ok": True,
+                            }
+                        )
+
+                        break
+
+                    except Exception as exc:
+                        last_error = str(
+                            exc
+                        )
+
+                        attempts.append(
+                            {
+                                "bookmaker": bookmaker,
+                                "parameter": param_name,
+                                "ok": False,
+                                "error": last_error,
+                            }
+                        )
+
+                if odds_payload is None:
+                    continue
+
+                odds_rows = (
+                    _oddspapi_list_payload(
                         odds_payload
                     )
+                )
+
+                if odds_rows:
+                    book_had_success = True
 
                     _merge_oddspapi_raw_events(
                         merged_raw,
                         odds_rows,
                     )
 
-                except Exception:
-                    # Una casa puede fallar/no cubrir ese torneo;
-                    # seguimos con las demás.
-                    continue
+            if book_had_success:
+                successful_books.append(
+                    bookmaker
+                )
 
-            warning = (
-                "OddsPapi usó fallback por bookmaker. "
-                "Cobertura según casas incluidas en tu suscripción."
-            )
-
-        # ---------------------------------------------------------
-        # Normalización a formato común de la app.
-        # ---------------------------------------------------------
         normalized = []
 
-        for (
-            fixture_id,
-            odds_event,
-        ) in merged_raw.items():
+        for fixture_id, odds_event in (
+            merged_raw.items()
+        ):
             fixture = fixture_map.get(
                 fixture_id
             )
@@ -1082,6 +1044,22 @@ def _get_oddspapi_odds():
             if not bookmakers:
                 continue
 
+            tournament_name = (
+                fixture.get(
+                    "tournamentName",
+                    ""
+                )
+                or "tennis"
+            )
+
+            category_name = str(
+                fixture.get(
+                    "categoryName",
+                    ""
+                )
+                or ""
+            )
+
             normalized.append(
                 {
                     "id": (
@@ -1100,10 +1078,7 @@ def _get_oddspapi_odds():
                     "sport_key": (
                         "tennis_oddspapi_"
                         + normalizar_nombre(
-                            fixture.get(
-                                "tournamentName",
-                                "tennis",
-                            )
+                            tournament_name
                         ).replace(
                             " ",
                             "_"
@@ -1112,65 +1087,90 @@ def _get_oddspapi_odds():
                     "odds_provider": (
                         "oddspapi"
                     ),
+                    "tournament_name": (
+                        tournament_name
+                    ),
+                    "category_name": (
+                        category_name
+                    ),
                     "bookmakers": bookmakers,
                 }
             )
 
-        used_books = sorted(
-            {
-                str(
-                    book.get(
-                        "title",
-                        book.get(
-                            "key",
-                            "",
-                        ),
+        if normalized:
+            message = (
+                f"OddsPapi OK: {len(normalized)} eventos "
+                f"con cuotas · casas: "
+                f"{', '.join(successful_books) or 'N/D'}."
+            )
+        else:
+            # Dejamos un diagnóstico útil sin tumbar The Odds API.
+            failed_attempts = [
+                a
+                for a in attempts
+                if not a.get(
+                    "ok"
+                )
+            ]
+
+            last_errors = []
+
+            for item in (
+                failed_attempts[-3:]
+            ):
+                err = str(
+                    item.get(
+                        "error",
+                        ""
                     )
                 )
-                for event in normalized
-                for book in event.get(
-                    "bookmakers",
-                    [],
-                )
-                if str(
-                    book.get(
-                        "title",
-                        book.get(
-                            "key",
-                            "",
-                        ),
+
+                if err:
+                    last_errors.append(
+                        err
                     )
-                ).strip()
-            }
-        )
+
+            message = (
+                f"OddsPapi: {len(fixture_map)} fixtures con odds, "
+                f"pero 0 eventos Match Winner normalizados."
+            )
+
+            if last_errors:
+                message += (
+                    " Últimos errores: "
+                    + " | ".join(
+                        last_errors
+                    )
+                )
 
         return {
             "ok": True,
             "events": normalized,
-            "message": warning,
+            "message": message,
             "fixtures": len(
                 fixture_map
             ),
             "tournaments": len(
                 tournament_ids
             ),
-            "account": account,
-            "bookmakers_used": used_books,
-            "mode": mode,
+            "account": {},
+            "bookmakers_used": successful_books,
+            "attempts": attempts,
         }
 
     except Exception as exc:
         return {
             "ok": False,
             "events": [],
-            "message": str(exc),
+            "message": str(
+                exc
+            ),
             "fixtures": 0,
             "tournaments": 0,
             "account": {},
             "bookmakers_used": [],
-            "mode": "error",
+            "attempts": attempts,
         }
-
 
 # =========================================================
 # MERGE
@@ -1354,9 +1354,9 @@ def get_tennis_odds():
                     "bookmakers_used",
                     [],
                 ),
-                "mode": secondary.get(
-                    "mode",
-                    "",
+                "attempts": secondary.get(
+                    "attempts",
+                    [],
                 ),
             },
         },
