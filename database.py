@@ -3,7 +3,8 @@ from pathlib import Path
 from datetime import datetime
 import pandas as pd
 
-DB = Path("tennis_edge.db")
+BASE_DIR = Path(__file__).resolve().parent
+DB = BASE_DIR / "tennis_edge.db"
 
 
 def connect():
@@ -160,6 +161,7 @@ def set_last_update():
                 )
             )
         )
+        con.commit()
 
 
 def get_last_update():
