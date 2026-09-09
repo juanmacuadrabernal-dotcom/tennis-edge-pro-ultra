@@ -32,6 +32,11 @@ from match_props_v1 import (
     predict_match_props_v1,
     poisson_over_probability,
     market_metrics,
+    push_market_metrics,
+    distribution_over_probability,
+    distribution_under_probability,
+    game_handicap_probability,
+    total_sets_over_probability,
 )
 
 
@@ -1222,7 +1227,7 @@ if analizar:
             )
         else:
             with st.spinner(
-                "Calculando aces, dobles faltas y resultado exacto..."
+                "Calculando props, juegos, sets y mercados de saque..."
             ):
                 props_result = predict_props_cached(
                     player_a,
@@ -1458,8 +1463,8 @@ if payload:
 
     render_html(
         f"""
-        <div class="tep-kicker">Props V1</div>
-        <div class="tep-card-title">Aces, dobles faltas y resultado exacto</div>
+        <div class="tep-kicker">Props V1.1</div>
+        <div class="tep-card-title">Aces, dobles faltas, juegos, sets y resultado exacto</div>
         <div class="tep-card-sub">
             Capa estadística independiente del V4.2 · {esc(shown_best_of_label)}.
             Las líneas y cuotas se pueden modificar manualmente para comprobar valor.
@@ -1654,6 +1659,504 @@ if payload:
                 else:
                     st.error("🔴 Sin valor según PROPS V1")
 
+        # --------------------------------------------------------
+        # NUEVOS MERCADOS · JUEGOS / SETS / MÁS ACES
+        # --------------------------------------------------------
+        render_html(
+            "<div style='height:.9rem'></div>",
+            unsafe_allow_html=True,
+        )
+
+        render_html(
+            """
+            <div class="tep-kicker">Mercados de partido</div>
+            <div class="tep-card-title">Total de juegos, hándicap, sets y más aces</div>
+            <div class="tep-card-sub">
+                Los mercados de juegos salen de una simulación de partido calibrada a la
+                probabilidad del V4.2. Las líneas y cuotas son editables manualmente.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # TOTAL DE JUEGOS
+        expected_total_games = float(
+            props_result.get(
+                "expected_total_games",
+                0,
+            )
+            or 0
+        )
+        expected_games_a = float(
+            props_result.get(
+                "expected_games_a",
+                0,
+            )
+            or 0
+        )
+        expected_games_b = float(
+            props_result.get(
+                "expected_games_b",
+                0,
+            )
+            or 0
+        )
+        total_games_dist = props_result.get(
+            "total_games_distribution",
+            {},
+        ) or {}
+
+        render_html(
+            f"""
+            <div class="tep-card" style="margin:.65rem 0 .7rem;">
+              <div class="tep-kicker">Total de juegos</div>
+              <div class="tep-card-title">{expected_total_games:.1f} juegos esperados</div>
+              <div class="tep-card-sub">
+                Proyección: {esc(a_name)} {expected_games_a:.1f} · {esc(b_name)} {expected_games_b:.1f}
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        total_line_default = float(
+            props_result.get(
+                "suggested_total_games_line",
+                22.5 if shown_best_of == 3 else 36.5,
+            )
+            or (22.5 if shown_best_of == 3 else 36.5)
+        )
+
+        tg1, tg2, tg3 = st.columns([1, 1, 1])
+
+        with tg1:
+            total_games_line = st.number_input(
+                "Línea total de juegos",
+                min_value=10.5,
+                max_value=70.5,
+                value=total_line_default,
+                step=1.0,
+                format="%.1f",
+                key=f"props_total_games_line_{a_name}_{b_name}_{shown_best_of}",
+            )
+
+        with tg2:
+            total_games_over_odds = st.number_input(
+                f"Cuota Over {total_games_line:.1f}",
+                min_value=1.01,
+                max_value=25.0,
+                value=1.90,
+                step=0.01,
+                format="%.2f",
+                key=f"props_total_games_over_odds_{a_name}_{b_name}_{shown_best_of}",
+            )
+
+        with tg3:
+            total_games_under_odds = st.number_input(
+                f"Cuota Under {total_games_line:.1f}",
+                min_value=1.01,
+                max_value=25.0,
+                value=1.90,
+                step=0.01,
+                format="%.2f",
+                key=f"props_total_games_under_odds_{a_name}_{b_name}_{shown_best_of}",
+            )
+
+        total_games_over_prob = distribution_over_probability(
+            total_games_dist,
+            total_games_line,
+        )
+        total_games_under_prob = distribution_under_probability(
+            total_games_dist,
+            total_games_line,
+        )
+
+        total_games_over_market = market_metrics(
+            total_games_over_prob,
+            total_games_over_odds,
+        )
+        total_games_under_market = market_metrics(
+            total_games_under_prob,
+            total_games_under_odds,
+        )
+
+        tg_over_col, tg_under_col = st.columns(2)
+
+        with tg_over_col:
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">Over {total_games_line:.1f} juegos</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{total_games_over_prob:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{total_games_over_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{total_games_over_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{total_games_over_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with tg_under_col:
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">Under {total_games_line:.1f} juegos</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{total_games_under_prob:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{total_games_under_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{total_games_under_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{total_games_under_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # HÁNDICAP DE JUEGOS
+        render_html(
+            "<div style='height:.65rem'></div>",
+            unsafe_allow_html=True,
+        )
+
+        expected_margin_a = float(
+            props_result.get(
+                "expected_game_margin_a",
+                0,
+            )
+            or 0
+        )
+        margin_dist = props_result.get(
+            "game_margin_a_distribution",
+            {},
+        ) or {}
+
+        render_html(
+            f"""
+            <div class="tep-kicker">Hándicap de juegos</div>
+            <div class="tep-card-title">Margen esperado: {esc(a_name)} {expected_margin_a:+.1f} juegos</div>
+            <div class="tep-card-sub">
+                Introduce el hándicap exactamente como aparece en la casa: -2.5, +3.5, etc.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        hc_a_col, hc_b_col = st.columns(2)
+
+        handicap_a_default = float(
+            props_result.get(
+                "suggested_handicap_a",
+                -1.5,
+            )
+            or -1.5
+        )
+        handicap_b_default = float(
+            props_result.get(
+                "suggested_handicap_b",
+                1.5,
+            )
+            or 1.5
+        )
+
+        with hc_a_col:
+            hca1, hca2 = st.columns(2)
+            with hca1:
+                handicap_a_line = st.number_input(
+                    f"Hándicap juegos · {a_name}",
+                    min_value=-25.5,
+                    max_value=25.5,
+                    value=handicap_a_default,
+                    step=1.0,
+                    format="%+.1f",
+                    key=f"props_hcap_a_line_{a_name}_{b_name}_{shown_best_of}",
+                )
+            with hca2:
+                handicap_a_odds = st.number_input(
+                    f"Cuota · {a_name} {handicap_a_line:+.1f}",
+                    min_value=1.01,
+                    max_value=25.0,
+                    value=1.90,
+                    step=0.01,
+                    format="%.2f",
+                    key=f"props_hcap_a_odds_{a_name}_{b_name}_{shown_best_of}",
+                )
+
+            handicap_a_prob = game_handicap_probability(
+                margin_dist,
+                "A",
+                handicap_a_line,
+            )
+            handicap_a_market = market_metrics(
+                handicap_a_prob,
+                handicap_a_odds,
+            )
+
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">{esc(a_name)} {handicap_a_line:+.1f}</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{handicap_a_prob:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{handicap_a_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{handicap_a_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{handicap_a_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with hc_b_col:
+            hcb1, hcb2 = st.columns(2)
+            with hcb1:
+                handicap_b_line = st.number_input(
+                    f"Hándicap juegos · {b_name}",
+                    min_value=-25.5,
+                    max_value=25.5,
+                    value=handicap_b_default,
+                    step=1.0,
+                    format="%+.1f",
+                    key=f"props_hcap_b_line_{a_name}_{b_name}_{shown_best_of}",
+                )
+            with hcb2:
+                handicap_b_odds = st.number_input(
+                    f"Cuota · {b_name} {handicap_b_line:+.1f}",
+                    min_value=1.01,
+                    max_value=25.0,
+                    value=1.90,
+                    step=0.01,
+                    format="%.2f",
+                    key=f"props_hcap_b_odds_{a_name}_{b_name}_{shown_best_of}",
+                )
+
+            handicap_b_prob = game_handicap_probability(
+                margin_dist,
+                "B",
+                handicap_b_line,
+            )
+            handicap_b_market = market_metrics(
+                handicap_b_prob,
+                handicap_b_odds,
+            )
+
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">{esc(b_name)} {handicap_b_line:+.1f}</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{handicap_b_prob:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{handicap_b_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{handicap_b_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{handicap_b_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # TOTAL DE SETS
+        render_html(
+            "<div style='height:.65rem'></div>",
+            unsafe_allow_html=True,
+        )
+
+        sets_lines = [2.5] if shown_best_of == 3 else [3.5, 4.5]
+        ts1, ts2, ts3 = st.columns([1, 1, 1])
+
+        with ts1:
+            total_sets_line = st.selectbox(
+                "Línea total de sets",
+                sets_lines,
+                key=f"props_total_sets_line_{a_name}_{b_name}_{shown_best_of}",
+            )
+
+        with ts2:
+            total_sets_over_odds = st.number_input(
+                f"Cuota Over {total_sets_line:.1f} sets",
+                min_value=1.01,
+                max_value=25.0,
+                value=1.90,
+                step=0.01,
+                format="%.2f",
+                key=f"props_total_sets_over_odds_{a_name}_{b_name}_{shown_best_of}",
+            )
+
+        with ts3:
+            total_sets_under_odds = st.number_input(
+                f"Cuota Under {total_sets_line:.1f} sets",
+                min_value=1.01,
+                max_value=25.0,
+                value=1.90,
+                step=0.01,
+                format="%.2f",
+                key=f"props_total_sets_under_odds_{a_name}_{b_name}_{shown_best_of}",
+            )
+
+        score_probs_for_sets = props_result.get(
+            "score_probabilities",
+            {},
+        ) or {}
+        total_sets_over_prob = total_sets_over_probability(
+            score_probs_for_sets,
+            total_sets_line,
+        )
+        total_sets_under_prob = max(
+            0.0,
+            1.0 - total_sets_over_prob,
+        )
+
+        total_sets_over_market = market_metrics(
+            total_sets_over_prob,
+            total_sets_over_odds,
+        )
+        total_sets_under_market = market_metrics(
+            total_sets_under_prob,
+            total_sets_under_odds,
+        )
+
+        ts_over_col, ts_under_col = st.columns(2)
+
+        with ts_over_col:
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">Over {total_sets_line:.1f} sets</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{total_sets_over_prob:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{total_sets_over_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{total_sets_over_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{total_sets_over_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with ts_under_col:
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">Under {total_sets_line:.1f} sets</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{total_sets_under_prob:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{total_sets_under_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{total_sets_under_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{total_sets_under_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        # QUIÉN HARÁ MÁS ACES
+        render_html(
+            "<div style='height:.65rem'></div>",
+            unsafe_allow_html=True,
+        )
+
+        aces_more = props_result.get(
+            "aces_more",
+            {},
+        ) or {}
+        a_more_aces_prob = float(
+            aces_more.get(
+                "a_more",
+                0,
+            )
+            or 0
+        )
+        b_more_aces_prob = float(
+            aces_more.get(
+                "b_more",
+                0,
+            )
+            or 0
+        )
+        aces_tie_prob = float(
+            aces_more.get(
+                "tie",
+                0,
+            )
+            or 0
+        )
+
+        render_html(
+            f"""
+            <div class="tep-kicker">Quién hará más aces</div>
+            <div class="tep-card-title">{esc(a_name)} {a_more_aces_prob:.1%} · Empate {aces_tie_prob:.1%} · {esc(b_name)} {b_more_aces_prob:.1%}</div>
+            <div class="tep-card-sub">
+                Para el cálculo de EV se asume mercado de dos vías con empate = apuesta nula.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        ma1, ma2 = st.columns(2)
+
+        with ma1:
+            a_more_aces_odds = st.number_input(
+                f"Cuota · {a_name} hará más aces",
+                min_value=1.01,
+                max_value=25.0,
+                value=1.90,
+                step=0.01,
+                format="%.2f",
+                key=f"props_more_aces_a_odds_{a_name}_{b_name}_{shown_best_of}",
+            )
+            a_more_aces_market = push_market_metrics(
+                a_more_aces_prob,
+                b_more_aces_prob,
+                aces_tie_prob,
+                a_more_aces_odds,
+            )
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">Más aces · {esc(a_name)}</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">PROB. COND.</div><strong>{a_more_aces_market['conditional_probability']:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{a_more_aces_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{a_more_aces_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{a_more_aces_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+        with ma2:
+            b_more_aces_odds = st.number_input(
+                f"Cuota · {b_name} hará más aces",
+                min_value=1.01,
+                max_value=25.0,
+                value=1.90,
+                step=0.01,
+                format="%.2f",
+                key=f"props_more_aces_b_odds_{a_name}_{b_name}_{shown_best_of}",
+            )
+            b_more_aces_market = push_market_metrics(
+                b_more_aces_prob,
+                a_more_aces_prob,
+                aces_tie_prob,
+                b_more_aces_odds,
+            )
+            render_html(
+                f"""
+                <div class="tep-card" style="padding:1rem;">
+                  <div class="tep-kicker">Más aces · {esc(b_name)}</div>
+                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                    <div><div style="font-size:.68rem;color:#7a817c;">PROB. COND.</div><strong>{b_more_aces_market['conditional_probability']:.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{b_more_aces_market['fair_odds']:.2f}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{b_more_aces_market['edge']:+.1%}</strong></div>
+                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{b_more_aces_market['ev']:+.1%}</strong></div>
+                  </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
         # RESULTADO EXACTO
         render_html(
             "<div style='height:.7rem'></div>",
@@ -1739,8 +2242,8 @@ if payload:
                     st.error("🔴 Sin valor")
 
         st.caption(
-            "PROPS V1 no modifica el Ensemble V4.2. "
-            "Es una primera capa estadística para props; las cuotas siguen siendo manuales."
+            "PROPS V1.1 no modifica el Ensemble V4.2. "
+            "Los mercados derivados son estimaciones estadísticas y las cuotas siguen siendo manuales."
         )
 
     # MAIN ANALYTICS GRID
