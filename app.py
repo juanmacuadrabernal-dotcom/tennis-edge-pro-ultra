@@ -36,9 +36,12 @@ from match_props_v2 import (
     push_market_metrics,
     distribution_over_probability,
     distribution_under_probability,
-    game_handicap_probability,
     total_sets_over_probability,
 )
+
+
+PROPS_ENGINE_CACHE_VERSION = "PROPS_GAMES_SETS_ACES_20260909_FIX2"
+
 
 
 
@@ -768,7 +771,12 @@ def predict_props_cached(
     match_prob_a,
     recent_window,
     data_version,
+    props_engine_version,
 ):
+    # Forma parte de la clave de @st.cache_data.
+    # Cambiar PROPS_ENGINE_CACHE_VERSION invalida resultados antiguos.
+    _ = props_engine_version
+
     df_local = load_data()
 
     return predict_match_props_v1(
@@ -1238,6 +1246,7 @@ if analizar:
                     float(result["prob_a"]),
                     25,
                     data_version,
+                    PROPS_ENGINE_CACHE_VERSION,
                 )
 
             physical_a = None
@@ -1265,6 +1274,7 @@ if analizar:
                 "cuota_a": float(cuota_a),
                 "cuota_b": float(cuota_b),
                 "props_result": props_result,
+                "props_engine_version": PROPS_ENGINE_CACHE_VERSION,
                 "incluir_fisico": bool(
                     incluir_fisico
                 ),
@@ -1319,6 +1329,46 @@ if payload:
     pb = float(
         result["prob_b"]
     )
+
+    # --------------------------------------------------------
+    # PROPS V2 · VALIDACIÓN DE ESQUEMA / CACHÉ ANTIGUA
+    # --------------------------------------------------------
+    # Streamlit puede conservar un resultado de una versión previa del
+    # módulo aun después de desplegar código nuevo. Detectamos ese esquema
+    # antiguo y recalculamos DIRECTAMENTE con match_props_v2.
+    props_schema_ok = (
+        isinstance(props_result, dict)
+        and props_result.get("ok")
+        and float(props_result.get("expected_total_games", 0) or 0) > 0
+        and bool(props_result.get("total_games_distribution"))
+        and bool(props_result.get("aces_more"))
+    )
+
+    props_version_ok = (
+        payload.get("props_engine_version")
+        == PROPS_ENGINE_CACHE_VERSION
+    )
+
+    if not props_schema_ok or not props_version_ok:
+        surface_model_props = (
+            None
+            if shown_surface == "Todas"
+            else shown_surface
+        )
+
+        props_result = predict_match_props_v1(
+            df,
+            a_name,
+            b_name,
+            surface=surface_model_props,
+            best_of=shown_best_of,
+            match_prob_a=pa,
+            recent_window=25,
+        )
+
+        payload["props_result"] = props_result
+        payload["props_engine_version"] = PROPS_ENGINE_CACHE_VERSION
+        st.session_state["tep_web_analysis"] = payload
 
     fair_a = (
         1 / pa
@@ -1465,7 +1515,7 @@ if payload:
     render_html(
         f"""
         <div class="tep-kicker">Props V1.1</div>
-        <div class="tep-card-title">Aces, dobles faltas, juegos, sets y resultado exacto</div>
+        <div class="tep-card-title">Aces, dobles faltas, total de juegos, sets y resultado exacto</div>
         <div class="tep-card-sub">
             Capa estadística independiente del V4.2 · {esc(shown_best_of_label)}.
             Las líneas y cuotas se pueden modificar manualmente para comprobar valor.
@@ -1671,7 +1721,7 @@ if payload:
         render_html(
             """
             <div class="tep-kicker">Mercados de partido</div>
-            <div class="tep-card-title">Total de juegos, hándicap, sets y más aces</div>
+            <div class="tep-card-title">Total de juegos, sets y más aces</div>
             <div class="tep-card-sub">
                 Los mercados de juegos salen de una simulación de partido calibrada a la
                 probabilidad del V4.2. Las líneas y cuotas son editables manualmente.
@@ -1809,148 +1859,6 @@ if payload:
                     <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{total_games_under_market['fair_odds']:.2f}</strong></div>
                     <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{total_games_under_market['edge']:+.1%}</strong></div>
                     <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{total_games_under_market['ev']:+.1%}</strong></div>
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        # HÁNDICAP DE JUEGOS
-        render_html(
-            "<div style='height:.65rem'></div>",
-            unsafe_allow_html=True,
-        )
-
-        expected_margin_a = float(
-            props_result.get(
-                "expected_game_margin_a",
-                0,
-            )
-            or 0
-        )
-        margin_dist = props_result.get(
-            "game_margin_a_distribution",
-            {},
-        ) or {}
-
-        render_html(
-            f"""
-            <div class="tep-kicker">Hándicap de juegos</div>
-            <div class="tep-card-title">Margen esperado: {esc(a_name)} {expected_margin_a:+.1f} juegos</div>
-            <div class="tep-card-sub">
-                Introduce el hándicap exactamente como aparece en la casa: -2.5, +3.5, etc.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        hc_a_col, hc_b_col = st.columns(2)
-
-        handicap_a_default = float(
-            props_result.get(
-                "suggested_handicap_a",
-                -1.5,
-            )
-            or -1.5
-        )
-        handicap_b_default = float(
-            props_result.get(
-                "suggested_handicap_b",
-                1.5,
-            )
-            or 1.5
-        )
-
-        with hc_a_col:
-            hca1, hca2 = st.columns(2)
-            with hca1:
-                handicap_a_line = st.number_input(
-                    f"Hándicap juegos · {a_name}",
-                    min_value=-25.5,
-                    max_value=25.5,
-                    value=handicap_a_default,
-                    step=1.0,
-                    format="%+.1f",
-                    key=f"props_hcap_a_line_{a_name}_{b_name}_{shown_best_of}",
-                )
-            with hca2:
-                handicap_a_odds = st.number_input(
-                    f"Cuota · {a_name} {handicap_a_line:+.1f}",
-                    min_value=1.01,
-                    max_value=25.0,
-                    value=1.90,
-                    step=0.01,
-                    format="%.2f",
-                    key=f"props_hcap_a_odds_{a_name}_{b_name}_{shown_best_of}",
-                )
-
-            handicap_a_prob = game_handicap_probability(
-                margin_dist,
-                "A",
-                handicap_a_line,
-            )
-            handicap_a_market = market_metrics(
-                handicap_a_prob,
-                handicap_a_odds,
-            )
-
-            render_html(
-                f"""
-                <div class="tep-card" style="padding:1rem;">
-                  <div class="tep-kicker">{esc(a_name)} {handicap_a_line:+.1f}</div>
-                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
-                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{handicap_a_prob:.1%}</strong></div>
-                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{handicap_a_market['fair_odds']:.2f}</strong></div>
-                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{handicap_a_market['edge']:+.1%}</strong></div>
-                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{handicap_a_market['ev']:+.1%}</strong></div>
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-        with hc_b_col:
-            hcb1, hcb2 = st.columns(2)
-            with hcb1:
-                handicap_b_line = st.number_input(
-                    f"Hándicap juegos · {b_name}",
-                    min_value=-25.5,
-                    max_value=25.5,
-                    value=handicap_b_default,
-                    step=1.0,
-                    format="%+.1f",
-                    key=f"props_hcap_b_line_{a_name}_{b_name}_{shown_best_of}",
-                )
-            with hcb2:
-                handicap_b_odds = st.number_input(
-                    f"Cuota · {b_name} {handicap_b_line:+.1f}",
-                    min_value=1.01,
-                    max_value=25.0,
-                    value=1.90,
-                    step=0.01,
-                    format="%.2f",
-                    key=f"props_hcap_b_odds_{a_name}_{b_name}_{shown_best_of}",
-                )
-
-            handicap_b_prob = game_handicap_probability(
-                margin_dist,
-                "B",
-                handicap_b_line,
-            )
-            handicap_b_market = market_metrics(
-                handicap_b_prob,
-                handicap_b_odds,
-            )
-
-            render_html(
-                f"""
-                <div class="tep-card" style="padding:1rem;">
-                  <div class="tep-kicker">{esc(b_name)} {handicap_b_line:+.1f}</div>
-                  <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
-                    <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{handicap_b_prob:.1%}</strong></div>
-                    <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{handicap_b_market['fair_odds']:.2f}</strong></div>
-                    <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{handicap_b_market['edge']:+.1%}</strong></div>
-                    <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{handicap_b_market['ev']:+.1%}</strong></div>
                   </div>
                 </div>
                 """,
