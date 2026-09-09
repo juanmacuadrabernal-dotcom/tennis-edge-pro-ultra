@@ -1,3 +1,4 @@
+# PROPS MODULE: match_props_v2.py · compatibility hotfix
 # ============================================================
 # TENNIS EDGE PRO · WEB ANALYZER PREMIUM
 # ------------------------------------------------------------
@@ -28,7 +29,7 @@ from model_v42 import (
 )
 from player_news import analyse_physical_status
 from player_photos import ensure_photo
-from match_props_v1 import (
+from match_props_v2 import (
     predict_match_props_v1,
     poisson_over_probability,
     market_metrics,
