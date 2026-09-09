@@ -12,6 +12,7 @@
 # ============================================================
 
 import html
+import textwrap
 
 import pandas as pd
 import streamlit as st
@@ -26,6 +27,20 @@ from model_v42 import (
     get_v42_status,
 )
 from player_news import analyse_physical_status
+
+
+
+def render_html(value, unsafe_allow_html=True, **kwargs):
+    """
+    Renderiza HTML sin que Streamlit interprete líneas indentadas
+    como bloques de código Markdown.
+    """
+    cleaned = textwrap.dedent(str(value)).strip()
+    st.markdown(
+        cleaned,
+        unsafe_allow_html=unsafe_allow_html,
+        **kwargs,
+    )
 
 
 # ============================================================
@@ -44,7 +59,7 @@ st.set_page_config(
 # DESIGN SYSTEM
 # ============================================================
 
-st.markdown(
+render_html(
     r"""
     <style>
     /* ---------- STREAMLIT RESET ---------- */
@@ -542,6 +557,12 @@ st.markdown(
         font-size: .72rem;
     }
 
+
+    /* Guard extra: esta web no usa bloques de código como contenido. */
+    div[data-testid="stCodeBlock"] {
+        display: none !important;
+    }
+
     /* ---------- RESPONSIVE ---------- */
     @media (max-width: 900px) {
         .block-container {
@@ -729,7 +750,7 @@ def render_market(
     edge,
     ev,
 ):
-    st.markdown(
+    render_html(
         f"""
         <div class="tep-market {value_class(ev)}">
           <div class="tep-kicker">{value_text(ev)}</div>
@@ -773,7 +794,7 @@ model_text = (
     else "Backup"
 )
 
-st.markdown(
+render_html(
     f"""
     <div class="tep-topbar">
       <div class="tep-brand">
@@ -801,7 +822,7 @@ st.markdown(
 # HERO
 # ============================================================
 
-st.markdown(
+render_html(
     f"""
     <section class="tep-hero">
       <div class="tep-eyebrow">Tennis intelligence · Match analyzer</div>
@@ -820,7 +841,7 @@ st.markdown(
 )
 
 
-st.markdown(
+render_html(
     f"""
     <div class="tep-kpi-strip">
       <div class="tep-kpi">
@@ -849,7 +870,7 @@ st.markdown(
 # MATCH CONFIGURATION
 # ============================================================
 
-st.markdown(
+render_html(
     """
     <div class="tep-card" style="margin-bottom:.9rem;">
       <div class="tep-kicker">Nuevo análisis</div>
@@ -1084,7 +1105,7 @@ if payload:
         else b_name
     )
 
-    st.markdown(
+    render_html(
         f"""
         <div class="tep-match-card">
           <div class="tep-kicker">
@@ -1123,7 +1144,7 @@ if payload:
     )
 
     # MARKET
-    st.markdown(
+    render_html(
         """
         <div class="tep-kicker">Mercado</div>
         <div class="tep-card-title">Cuota justa, Edge y valor esperado</div>
@@ -1158,7 +1179,7 @@ if payload:
         )
 
     # MAIN ANALYTICS GRID
-    st.markdown(
+    render_html(
         "<div style='height:.8rem'></div>",
         unsafe_allow_html=True,
     )
@@ -1173,7 +1194,7 @@ if payload:
     )
 
     with left:
-        st.markdown(
+        render_html(
             f"""
             <div class="tep-card">
               <div class="tep-kicker">Head to Head</div>
@@ -1227,7 +1248,7 @@ if payload:
             1,
         )
 
-        st.markdown(
+        render_html(
             f"""
             <div class="tep-card">
               <div class="tep-kicker">Rating</div>
@@ -1257,7 +1278,7 @@ if payload:
         )
 
     with right:
-        st.markdown(
+        render_html(
             f"""
             <div class="tep-card">
               <div class="tep-kicker">Modelo</div>
@@ -1288,7 +1309,7 @@ if payload:
         )
 
     # FACTORS
-    st.markdown(
+    render_html(
         "<div style='height:.8rem'></div>",
         unsafe_allow_html=True,
     )
@@ -1298,7 +1319,7 @@ if payload:
     )
 
     with factors_col:
-        st.markdown(
+        render_html(
             """
             <div class="tep-kicker">Inside the model</div>
             <div class="tep-card-title">Comparativa estadística</div>
@@ -1333,7 +1354,7 @@ if payload:
             "",
         )
 
-        st.markdown(
+        render_html(
             f"""
             <div class="tep-card">
               <div class="tep-kicker">Interpretación</div>
@@ -1350,12 +1371,12 @@ if payload:
     if payload.get(
         "incluir_fisico"
     ):
-        st.markdown(
+        render_html(
             "<div style='height:.8rem'></div>",
             unsafe_allow_html=True,
         )
 
-        st.markdown(
+        render_html(
             """
             <div class="tep-kicker">Contexto externo</div>
             <div class="tep-card-title">Estado físico y noticias recientes</div>
@@ -1386,7 +1407,7 @@ if payload:
         ]:
             with col:
                 if not physical:
-                    st.markdown(
+                    render_html(
                         f"""
                         <div class="tep-card">
                           <div class="tep-card-title">{esc(name)}</div>
@@ -1410,7 +1431,7 @@ if payload:
                     "Sin estado",
                 )
 
-                st.markdown(
+                render_html(
                     f"""
                     <div class="tep-card">
                       <div class="tep-kicker">Riesgo físico</div>
@@ -1450,7 +1471,7 @@ if payload:
 
                 if alerts:
                     for article in alerts:
-                        st.markdown(
+                        render_html(
                             f"""
                             <div class="tep-news">
                               <strong>{esc(article.get('title','Alerta'))}</strong><br>
@@ -1467,7 +1488,7 @@ if payload:
                     )
 
 else:
-    st.markdown(
+    render_html(
         """
         <div class="tep-card" style="margin-top:.2rem;text-align:center;padding:1.5rem;">
           <div style="font-size:1.9rem;">🎾</div>
@@ -1487,7 +1508,7 @@ else:
 # FOOTER
 # ============================================================
 
-st.markdown(
+render_html(
     """
     <div class="tep-footer">
       <div>
