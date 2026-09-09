@@ -28,6 +28,11 @@ from model_v42 import (
 )
 from player_news import analyse_physical_status
 from player_photos import ensure_photo
+from match_props_v1 import (
+    predict_match_props_v1,
+    poisson_over_probability,
+    market_metrics,
+)
 
 
 
@@ -748,6 +753,29 @@ def predict_match_cached(
     )
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def predict_props_cached(
+    player_a,
+    player_b,
+    surface,
+    best_of,
+    match_prob_a,
+    recent_window,
+    data_version,
+):
+    df_local = load_data()
+
+    return predict_match_props_v1(
+        df_local,
+        player_a,
+        player_b,
+        surface=surface,
+        best_of=best_of,
+        match_prob_a=match_prob_a,
+        recent_window=recent_window,
+    )
+
+
 df = load_data()
 
 if df.empty:
@@ -1059,8 +1087,8 @@ render_html(
     unsafe_allow_html=True,
 )
 
-p1, p2, ps = st.columns(
-    [1.2, 1.2, .75]
+p1, p2, ps, pf = st.columns(
+    [1.2, 1.2, .75, .75]
 )
 
 with p1:
@@ -1091,6 +1119,26 @@ with ps:
             "Todas",
         ],
         key="web_surface",
+    )
+
+with pf:
+    best_of_label = st.selectbox(
+        "Formato",
+        [
+            "Mejor de 3",
+            "Mejor de 5",
+        ],
+        key="web_best_of",
+        help=(
+            "El formato afecta a la duración esperada, "
+            "aces, dobles faltas y resultado exacto."
+        ),
+    )
+
+    best_of = (
+        5
+        if best_of_label == "Mejor de 5"
+        else 3
     )
 
 q1, q2, q3, q4 = st.columns(
@@ -1173,6 +1221,19 @@ if analizar:
                 )
             )
         else:
+            with st.spinner(
+                "Calculando aces, dobles faltas y resultado exacto..."
+            ):
+                props_result = predict_props_cached(
+                    player_a,
+                    player_b,
+                    surface_model,
+                    best_of,
+                    float(result["prob_a"]),
+                    25,
+                    data_version,
+                )
+
             physical_a = None
             physical_b = None
 
@@ -1193,8 +1254,11 @@ if analizar:
                 "player_a": player_a,
                 "player_b": player_b,
                 "surface": surface,
+                "best_of": int(best_of),
+                "best_of_label": best_of_label,
                 "cuota_a": float(cuota_a),
                 "cuota_b": float(cuota_b),
+                "props_result": props_result,
                 "incluir_fisico": bool(
                     incluir_fisico
                 ),
@@ -1225,6 +1289,20 @@ if payload:
     shown_surface = payload[
         "surface"
     ]
+    shown_best_of = int(
+        payload.get(
+            "best_of",
+            3,
+        )
+    )
+    shown_best_of_label = payload.get(
+        "best_of_label",
+        f"Mejor de {shown_best_of}",
+    )
+    props_result = payload.get(
+        "props_result",
+        {},
+    )
     result = payload[
         "result"
     ]
@@ -1293,7 +1371,7 @@ if payload:
         f"""
         <div class="tep-match-card">
           <div class="tep-kicker">
-            Resultado · {esc(shown_surface)}
+            Resultado · {esc(shown_surface)} · {esc(shown_best_of_label)}
           </div>
 
           <div class="tep-match-head">
@@ -1370,6 +1448,299 @@ if payload:
             fair_b,
             edge_b,
             ev_b,
+        )
+
+    # PROPS V1 · ACES / DOBLES FALTAS / RESULTADO EXACTO
+    render_html(
+        "<div style='height:.9rem'></div>",
+        unsafe_allow_html=True,
+    )
+
+    render_html(
+        f"""
+        <div class="tep-kicker">Props V1</div>
+        <div class="tep-card-title">Aces, dobles faltas y resultado exacto</div>
+        <div class="tep-card-sub">
+            Capa estadística independiente del V4.2 · {esc(shown_best_of_label)}.
+            Las líneas y cuotas se pueden modificar manualmente para comprobar valor.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not props_result or not props_result.get("ok"):
+        st.warning(
+            props_result.get(
+                "message",
+                "PROPS V1 no pudo calcular este partido.",
+            )
+            if isinstance(props_result, dict)
+            else "PROPS V1 no pudo calcular este partido."
+        )
+    else:
+        prop_a = props_result.get("player_a", {})
+        prop_b = props_result.get("player_b", {})
+
+        expected_sets = float(
+            props_result.get(
+                "expected_sets",
+                0,
+            )
+            or 0
+        )
+
+        render_html(
+            f"""
+            <div class="tep-card" style="margin:.7rem 0 .8rem;">
+              <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:center;">
+                <div>
+                  <div class="tep-kicker">Duración proyectada</div>
+                  <div class="tep-card-title" style="margin-bottom:0;">{expected_sets:.2f} sets esperados</div>
+                </div>
+                <div style="font-size:.78rem;color:#68716b;max-width:700px;">
+                  El formato modifica las oportunidades de saque. Aces y dobles faltas usan
+                  tasa por punto de servicio + superficie + forma reciente + perfil del rival.
+                </div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        prop_col_a, prop_col_b = st.columns(2)
+
+        for side, col, name, prop in [
+            ("a", prop_col_a, a_name, prop_a),
+            ("b", prop_col_b, b_name, prop_b),
+        ]:
+            with col:
+                exp_aces = float(prop.get("expected_aces", 0) or 0)
+                exp_df = float(prop.get("expected_double_faults", 0) or 0)
+                default_ace_line = float(prop.get("suggested_ace_line", 0.5) or 0.5)
+                default_df_line = float(prop.get("suggested_df_line", 0.5) or 0.5)
+                sample_matches = int(prop.get("sample_matches", 0) or 0)
+                surface_sample = int(prop.get("surface_sample_matches", 0) or 0)
+
+                render_html(
+                    f"""
+                    <div class="tep-card">
+                      <div class="tep-kicker">Proyección de saque</div>
+                      <div class="tep-card-title">{esc(name)}</div>
+                      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-top:.7rem;">
+                        <div style="padding:.8rem;border:1px solid #dedbd1;border-radius:14px;background:#fffdf8;">
+                          <div style="font-size:.72rem;color:#727a75;font-weight:800;text-transform:uppercase;">Aces esperados</div>
+                          <div style="font-size:2rem;font-weight:950;color:#0d5a3d;">{exp_aces:.1f}</div>
+                        </div>
+                        <div style="padding:.8rem;border:1px solid #dedbd1;border-radius:14px;background:#fffdf8;">
+                          <div style="font-size:.72rem;color:#727a75;font-weight:800;text-transform:uppercase;">Dobles faltas</div>
+                          <div style="font-size:2rem;font-weight:950;color:#28322d;">{exp_df:.1f}</div>
+                        </div>
+                      </div>
+                      <div style="font-size:.72rem;color:#7a817c;margin-top:.65rem;">
+                        Muestra reciente: {sample_matches} partidos · superficie: {surface_sample}
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                ace_line_col, ace_odds_col = st.columns([1, 1])
+
+                with ace_line_col:
+                    ace_line = st.number_input(
+                        f"Línea aces · {name}",
+                        min_value=0.5,
+                        max_value=40.5,
+                        value=default_ace_line,
+                        step=1.0,
+                        format="%.1f",
+                        key=f"props_ace_line_{side}_{a_name}_{b_name}_{shown_best_of}",
+                    )
+
+                with ace_odds_col:
+                    ace_odds = st.number_input(
+                        f"Cuota Over {ace_line:.1f} aces",
+                        min_value=1.01,
+                        max_value=25.0,
+                        value=1.85,
+                        step=0.01,
+                        format="%.2f",
+                        key=f"props_ace_odds_{side}_{a_name}_{b_name}_{shown_best_of}",
+                    )
+
+                ace_prob = poisson_over_probability(
+                    exp_aces,
+                    ace_line,
+                )
+                ace_market = market_metrics(
+                    ace_prob,
+                    ace_odds,
+                )
+
+                render_html(
+                    f"""
+                    <div class="tep-card" style="padding:1rem;margin-top:.25rem;">
+                      <div class="tep-kicker">Over {ace_line:.1f} aces</div>
+                      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                        <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{ace_prob:.1%}</strong></div>
+                        <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{ace_market['fair_odds']:.2f}</strong></div>
+                        <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{ace_market['edge']:+.1%}</strong></div>
+                        <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{ace_market['ev']:+.1%}</strong></div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if ace_market["ev"] >= 0.05:
+                    st.success("🟢 Valor positivo claro según PROPS V1")
+                elif ace_market["ev"] > 0:
+                    st.warning("🟡 Valor positivo pequeño según PROPS V1")
+                else:
+                    st.error("🔴 Sin valor según PROPS V1")
+
+                df_line_col, df_odds_col = st.columns([1, 1])
+
+                with df_line_col:
+                    df_line = st.number_input(
+                        f"Línea dobles faltas · {name}",
+                        min_value=0.5,
+                        max_value=20.5,
+                        value=default_df_line,
+                        step=1.0,
+                        format="%.1f",
+                        key=f"props_df_line_{side}_{a_name}_{b_name}_{shown_best_of}",
+                    )
+
+                with df_odds_col:
+                    df_odds = st.number_input(
+                        f"Cuota Over {df_line:.1f} dobles faltas",
+                        min_value=1.01,
+                        max_value=25.0,
+                        value=1.85,
+                        step=0.01,
+                        format="%.2f",
+                        key=f"props_df_odds_{side}_{a_name}_{b_name}_{shown_best_of}",
+                    )
+
+                df_prob = poisson_over_probability(
+                    exp_df,
+                    df_line,
+                )
+                df_market = market_metrics(
+                    df_prob,
+                    df_odds,
+                )
+
+                render_html(
+                    f"""
+                    <div class="tep-card" style="padding:1rem;margin-top:.25rem;">
+                      <div class="tep-kicker">Over {df_line:.1f} dobles faltas</div>
+                      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.45rem;margin-top:.55rem;text-align:center;">
+                        <div><div style="font-size:.68rem;color:#7a817c;">MODELO</div><strong>{df_prob:.1%}</strong></div>
+                        <div><div style="font-size:.68rem;color:#7a817c;">JUSTA</div><strong>{df_market['fair_odds']:.2f}</strong></div>
+                        <div><div style="font-size:.68rem;color:#7a817c;">EDGE</div><strong>{df_market['edge']:+.1%}</strong></div>
+                        <div><div style="font-size:.68rem;color:#7a817c;">EV</div><strong>{df_market['ev']:+.1%}</strong></div>
+                      </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                if df_market["ev"] >= 0.05:
+                    st.success("🟢 Valor positivo claro según PROPS V1")
+                elif df_market["ev"] > 0:
+                    st.warning("🟡 Valor positivo pequeño según PROPS V1")
+                else:
+                    st.error("🔴 Sin valor según PROPS V1")
+
+        # RESULTADO EXACTO
+        render_html(
+            "<div style='height:.7rem'></div>",
+            unsafe_allow_html=True,
+        )
+
+        render_html(
+            """
+            <div class="tep-kicker">Marcador exacto</div>
+            <div class="tep-card-title">Probabilidad + cuota manual + EV</div>
+            <div class="tep-card-sub">
+                Las probabilidades de marcador exacto se calibran para que su suma reproduzca
+                la probabilidad de victoria del Ensemble V4.2.
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        score_probs = props_result.get(
+            "score_probabilities",
+            {},
+        )
+
+        score_items = []
+        for label, probability in score_probs.items():
+            display_label = (
+                label.replace("A ", f"{a_name} ")
+                .replace("B ", f"{b_name} ")
+            )
+            score_items.append(
+                (label, display_label, float(probability))
+            )
+
+        if shown_best_of == 3:
+            score_columns = st.columns(4)
+        else:
+            score_columns = st.columns(3)
+
+        for idx, (raw_label, display_label, probability) in enumerate(score_items):
+            col = score_columns[idx % len(score_columns)]
+
+            with col:
+                fair_score = 1.0 / probability if probability > 0 else 0.0
+                default_score_odds = min(100.0, max(1.01, round(fair_score, 2)))
+
+                render_html(
+                    f"""
+                    <div class="tep-card" style="text-align:center;padding:1rem;">
+                      <div class="tep-kicker">Resultado exacto</div>
+                      <div style="font-weight:900;font-size:1rem;color:#28322d;">{esc(display_label)}</div>
+                      <div style="font-size:1.75rem;font-weight:950;color:#0d5a3d;margin:.25rem 0;">{probability:.1%}</div>
+                      <div style="font-size:.72rem;color:#7a817c;">Cuota justa {fair_score:.2f}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                score_odds = st.number_input(
+                    f"Cuota · {display_label}",
+                    min_value=1.01,
+                    max_value=100.0,
+                    value=default_score_odds,
+                    step=0.05,
+                    format="%.2f",
+                    key=f"score_odds_{raw_label}_{a_name}_{b_name}_{shown_best_of}",
+                )
+
+                score_market = market_metrics(
+                    probability,
+                    score_odds,
+                )
+
+                st.caption(
+                    f"Edge {score_market['edge']:+.1%} · "
+                    f"EV {score_market['ev']:+.1%}"
+                )
+
+                if score_market["ev"] >= 0.05:
+                    st.success("🟢 VALOR")
+                elif score_market["ev"] > 0:
+                    st.warning("🟡 Valor pequeño")
+                else:
+                    st.error("🔴 Sin valor")
+
+        st.caption(
+            "PROPS V1 no modifica el Ensemble V4.2. "
+            "Es una primera capa estadística para props; las cuotas siguen siendo manuales."
         )
 
     # MAIN ANALYTICS GRID
