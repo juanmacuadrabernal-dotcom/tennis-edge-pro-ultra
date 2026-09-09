@@ -27,21 +27,29 @@ from model_v42 import (
     get_v42_status,
 )
 from player_news import analyse_physical_status
+from player_photos import ensure_photo
 
 
 
 def render_html(value, unsafe_allow_html=True, **kwargs):
     """
-    Renderiza HTML sin que Streamlit interprete ninguna línea
-    indentada como bloque de código Markdown.
-
-    Importante:
-    dedent() por sí solo no basta cuando hay HTML anidado.
-    Por eso eliminamos la sangría de CADA línea.
+    Renderiza HTML real.
+    st.html evita que HTML anidado se convierta en bloques de código.
     """
-    raw = textwrap.dedent(str(value)).strip()
+    raw = textwrap.dedent(
+        str(value)
+    ).strip()
 
-    cleaned = "\n".join(
+    if hasattr(
+        st,
+        "html",
+    ):
+        st.html(
+            raw
+        )
+        return
+
+    cleaned = " ".join(
         line.strip()
         for line in raw.splitlines()
         if line.strip()
@@ -49,7 +57,7 @@ def render_html(value, unsafe_allow_html=True, **kwargs):
 
     st.markdown(
         cleaned,
-        unsafe_allow_html=unsafe_allow_html,
+        unsafe_allow_html=True,
         **kwargs,
     )
 
@@ -298,6 +306,59 @@ render_html(
         font-size: .67rem;
         font-weight: 900;
     }
+
+
+    /* ---------- OFFICIAL PLAYER PHOTOS ---------- */
+    .tep-player-photo-wrap {
+        display: flex;
+        align-items: center;
+        gap: .9rem;
+    }
+
+    .tep-player.right .tep-player-photo-wrap {
+        flex-direction: row-reverse;
+    }
+
+    .tep-player-photo-shell {
+        width: 92px;
+        height: 92px;
+        border-radius: 50%;
+        overflow: hidden;
+        flex: 0 0 92px;
+        border: 3px solid rgba(185,146,73,.48);
+        box-shadow: 0 9px 24px rgba(18,48,34,.13);
+        background:
+            radial-gradient(circle at 35% 25%, #f5efe1, #dce6de);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .tep-player-photo {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        object-position: center top;
+        display: block;
+    }
+
+    .tep-player-avatar {
+        font-family: Georgia, "Times New Roman", serif;
+        color: #0d5a3d;
+        font-weight: 900;
+        font-size: 1.55rem;
+        letter-spacing: -.03em;
+    }
+
+    .tep-player-photo-source {
+        margin-top: .22rem;
+        color: #91958f;
+        font-size: .56rem;
+        text-transform: uppercase;
+        letter-spacing: .07em;
+        font-weight: 800;
+    }
+
 
     /* ---------- PROBABILITY ---------- */
     .tep-match-card {
@@ -569,6 +630,11 @@ render_html(
     }
 
 
+    /* Guard extra: esta web no usa bloques de código como contenido. */
+    div[data-testid="stCodeBlock"] {
+        display: none !important;
+    }
+
     /* ---------- RESPONSIVE ---------- */
     @media (max-width: 900px) {
         .block-container {
@@ -614,6 +680,16 @@ render_html(
 
         .tep-player-name {
             font-size: 1.15rem;
+        }
+
+        .tep-player-photo-shell {
+            width: 62px;
+            height: 62px;
+            flex-basis: 62px;
+        }
+
+        .tep-player-photo-wrap {
+            gap: .5rem;
         }
 
         .tep-footer {
@@ -711,6 +787,100 @@ players = sorted(
 def esc(value):
     return html.escape(
         str(value or "")
+    )
+
+
+def _initials(name):
+    parts = [
+        part
+        for part in str(
+            name or ""
+        ).split()
+        if part
+    ]
+
+    if not parts:
+        return "?"
+
+    if len(parts) == 1:
+        return parts[0][
+            :2
+        ].upper()
+
+    return (
+        parts[0][0]
+        + parts[-1][0]
+    ).upper()
+
+
+def player_photo_html(name):
+    """
+    Foto oficial ATP Tour junto al nombre.
+    Si no existe foto oficial resuelta -> avatar con iniciales.
+    """
+
+    record = ensure_photo(
+        name
+    )
+
+    if (
+        record
+        and record.get(
+            "status"
+        ) == "found"
+        and record.get(
+            "photo_url"
+        )
+    ):
+        photo_url = esc(
+            record.get(
+                "photo_url"
+            )
+        )
+
+        profile_url = esc(
+            record.get(
+                "profile_url"
+            )
+            or ""
+        )
+
+        image_html = (
+            f'<img class="tep-player-photo" '
+            f'src="{photo_url}" '
+            f'alt="{esc(name)}">'
+        )
+
+        if profile_url:
+            image_html = (
+                f'<a href="{profile_url}" '
+                f'target="_blank" '
+                f'title="Perfil oficial ATP Tour">'
+                f'{image_html}</a>'
+            )
+
+        return (
+            '<div>'
+            '<div class="tep-player-photo-shell">'
+            f'{image_html}'
+            '</div>'
+            '<div class="tep-player-photo-source">'
+            'ATP TOUR'
+            '</div>'
+            '</div>'
+        )
+
+    return (
+        '<div>'
+        '<div class="tep-player-photo-shell">'
+        f'<div class="tep-player-avatar">'
+        f'{esc(_initials(name))}'
+        '</div>'
+        '</div>'
+        '<div class="tep-player-photo-source">'
+        'SIN FOTO OFICIAL'
+        '</div>'
+        '</div>'
     )
 
 
@@ -1111,6 +1281,14 @@ if payload:
         else b_name
     )
 
+    photo_a_html = player_photo_html(
+        a_name
+    )
+
+    photo_b_html = player_photo_html(
+        b_name
+    )
+
     render_html(
         f"""
         <div class="tep-match-card">
@@ -1120,15 +1298,25 @@ if payload:
 
           <div class="tep-match-head">
             <div class="tep-player">
-              <div class="tep-player-label">Jugador A</div>
-              <div class="tep-player-name">{esc(a_name)}</div>
+              <div class="tep-player-photo-wrap">
+                {photo_a_html}
+                <div>
+                  <div class="tep-player-label">Jugador A</div>
+                  <div class="tep-player-name">{esc(a_name)}</div>
+                </div>
+              </div>
             </div>
 
             <div class="tep-vs">VS</div>
 
             <div class="tep-player right">
-              <div class="tep-player-label">Jugador B</div>
-              <div class="tep-player-name">{esc(b_name)}</div>
+              <div class="tep-player-photo-wrap">
+                {photo_b_html}
+                <div>
+                  <div class="tep-player-label">Jugador B</div>
+                  <div class="tep-player-name">{esc(b_name)}</div>
+                </div>
+              </div>
             </div>
           </div>
 
