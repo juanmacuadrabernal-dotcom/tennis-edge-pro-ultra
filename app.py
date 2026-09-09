@@ -32,10 +32,21 @@ from player_news import analyse_physical_status
 
 def render_html(value, unsafe_allow_html=True, **kwargs):
     """
-    Renderiza HTML sin que Streamlit interprete líneas indentadas
-    como bloques de código Markdown.
+    Renderiza HTML sin que Streamlit interprete ninguna línea
+    indentada como bloque de código Markdown.
+
+    Importante:
+    dedent() por sí solo no basta cuando hay HTML anidado.
+    Por eso eliminamos la sangría de CADA línea.
     """
-    cleaned = textwrap.dedent(str(value)).strip()
+    raw = textwrap.dedent(str(value)).strip()
+
+    cleaned = "\n".join(
+        line.strip()
+        for line in raw.splitlines()
+        if line.strip()
+    )
+
     st.markdown(
         cleaned,
         unsafe_allow_html=unsafe_allow_html,
@@ -557,11 +568,6 @@ render_html(
         font-size: .72rem;
     }
 
-
-    /* Guard extra: esta web no usa bloques de código como contenido. */
-    div[data-testid="stCodeBlock"] {
-        display: none !important;
-    }
 
     /* ---------- RESPONSIVE ---------- */
     @media (max-width: 900px) {
